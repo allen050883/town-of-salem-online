@@ -1,6 +1,7 @@
 import { DECK_COUNTS } from './cards';
+import { ROLE_CHOICE_MAX_PLAYERS, ROLE_IDS } from './roles';
 import { Rng } from './rng';
-import type { Card, CardType, GameState, Player, PlayerId, Tryal } from './types';
+import type { Card, CardType, GameOptions, GameState, Phase, Player, PlayerId, RoleId, Tryal } from './types';
 
 /** 5th edition rulebook setup table */
 export const TRYAL_TABLE: Record<number, { notAWitch: number; witch: number; constable: number }> = {
@@ -24,10 +25,16 @@ export interface SeatInput {
   name: string;
 }
 
-export function createGame(seats: SeatInput[], seed: number): GameState {
-  const n = seats.length;
+/** Tryal counts for n players; the extra-witch variant swaps one Not-a-Witch for a Witch */
+export function tryalCounts(n: number, extraWitch: boolean) {
   const table = TRYAL_TABLE[n];
   if (!table) throw new Error(`Player count must be between ${MIN_PLAYERS} and ${MAX_PLAYERS}`);
+  return extraWitch ? { ...table, notAWitch: table.notAWitch - 1, witch: table.witch + 1 } : table;
+}
+
+export function createGame(seats: SeatInput[], seed: number, options: GameOptions = { roles: false, extraWitch: false }): GameState {
+  const n = seats.length;
+  const table = tryalCounts(n, options.extraWitch);
 
   const rng = new Rng(seed);
 
@@ -61,6 +68,8 @@ export function createGame(seats: SeatInput[], seed: number): GameState {
       hand: deck.slice(i * STARTING_HAND, (i + 1) * STARTING_HAND),
       front: [],
       everWitch: own.some((t) => t.kind === 'witch'),
+      role: null,
+      uses: {},
     };
   });
   deck = deck.slice(n * STARTING_HAND);
@@ -70,6 +79,17 @@ export function createGame(seats: SeatInput[], seed: number): GameState {
   deck.push(mk('night'));
   const blackCat = mk('black_cat');
 
+  // Town Hall characters: with few players everyone is offered 2 and keeps 1
+  let phase: Phase = { kind: 'dawn', votes: {} };
+  if (options.roles) {
+    const pool = rng.shuffle(ROLE_IDS);
+    const per = n <= ROLE_CHOICE_MAX_PLAYERS ? 2 : 1;
+    const offers: Record<PlayerId, RoleId[]> = {};
+    seats.forEach((s, i) => (offers[s.id] = pool.slice(i * per, (i + 1) * per)));
+    if (per === 1) for (const s of seats) players[s.id]!.role = offers[s.id]![0]!;
+    else phase = { kind: 'roles', offers, picks: {} };
+  }
+
   return {
     seats: seats.map((s) => s.id),
     players,
@@ -77,8 +97,10 @@ export function createGame(seats: SeatInput[], seed: number): GameState {
     discard: [],
     // The black cat is parked in removed until dawn
     removed: [blackCat],
-    phase: { kind: 'dawn', votes: {} },
-    turn: { player: seats[0]!.id, mode: 'idle', drawsLeft: 0 },
+    phase,
+    turn: { player: seats[0]!.id, mode: 'idle', drawsLeft: 0, accusationsDrawn: 0, bonusDrawn: false },
+    options,
+    salvage: [],
     rng: rng.seed,
     seq: 0,
   };

@@ -11,6 +11,7 @@ import {
   type PlayerId,
   type PlayerView,
 } from '@salem/engine';
+import { verifyToken, type AuthUser } from './auth';
 
 /** Entries in the room's message log: game events and chat share one stream */
 export interface LogEntry {
@@ -26,6 +27,7 @@ export interface LogEntry {
 export interface LobbyPlayer {
   id: PlayerId;
   name: string;
+  picture?: string;
   connected: boolean;
 }
 
@@ -44,8 +46,8 @@ export interface ClientSnapshot {
 }
 
 interface JoinOptions {
-  playerId?: string;
-  name?: string;
+  /** Session token issued after LINE login */
+  token?: string;
 }
 
 const LAST_WORDS = 3;
@@ -57,7 +59,8 @@ function makeCode(): string {
 }
 
 export class SalemRoom extends Room {
-  maxClients = MAX_PLAYERS;
+  // Seat limits are enforced in onAuth; leave room for a reconnect's new connection while the old one hasn't closed yet
+  maxClients = MAX_PLAYERS * 2;
 
   private lobby: LobbyPlayer[] = [];
   private hostId: PlayerId | null = null;
@@ -82,18 +85,20 @@ export class SalemRoom extends Room {
     this.onMessage('sync', (client) => this.sendSnapshot(client));
   }
 
-  onAuth(_client: Client, options: JoinOptions) {
-    const playerId = options?.playerId;
-    if (!playerId || typeof playerId !== 'string') throw new Error('缺少玩家識別碼');
-    const known = this.lobby.some((p) => p.id === playerId);
+  /** Must be logged in; the return value becomes client.auth */
+  onAuth(_client: Client, options: JoinOptions): AuthUser {
+    const user = verifyToken(options?.token);
+    if (!user) throw new Error('請先用 LINE 登入');
+    const known = this.lobby.some((p) => p.id === user.id);
     if (!known && this.game) throw new Error('遊戲已經開始，無法加入');
     if (!known && this.lobby.length >= MAX_PLAYERS) throw new Error('房間已滿');
-    return true;
+    return user;
   }
 
-  onJoin(client: Client, options: JoinOptions) {
-    const playerId = options.playerId!;
-    const name = (options.name ?? '').trim().slice(0, 16) || '無名氏';
+  onJoin(client: Client) {
+    const user = client.auth as AuthUser;
+    const playerId = user.id;
+    const name = user.name;
     // The same player reconnecting (refresh / dropped connection): kick the old session
     for (const [sid, pid] of this.sessions) {
       if (pid === playerId && sid !== client.sessionId) {
@@ -106,9 +111,12 @@ export class SalemRoom extends Room {
     const existing = this.lobby.find((p) => p.id === playerId);
     if (existing) {
       existing.connected = true;
-      if (!this.game) existing.name = name;
+      if (!this.game) {
+        existing.name = name;
+        existing.picture = user.picture;
+      }
     } else {
-      this.lobby.push({ id: playerId, name, connected: true });
+      this.lobby.push({ id: playerId, name, picture: user.picture, connected: true });
       this.pushLog({ kind: 'event', channel: 'system', text: `${name} 加入了房間` });
     }
     if (!this.hostId) this.hostId = playerId;
@@ -153,7 +161,6 @@ export class SalemRoom extends Room {
     this.lastWords.clear();
     this.log = [];
     this.pushLog({ kind: 'event', channel: 'system', text: `遊戲開始！共 ${n} 名玩家。黎明：女巫正在決定把黑貓交給誰…` });
-    this.lock();
     this.afterStateChange();
   }
 
@@ -166,7 +173,6 @@ export class SalemRoom extends Room {
     // Remove players who disconnected
     this.lobby = this.lobby.filter((p) => p.connected);
     if (!this.lobby.some((p) => p.id === this.hostId)) this.hostId = this.lobby[0]?.id ?? null;
-    this.unlock();
     this.broadcastSnapshots();
   }
 

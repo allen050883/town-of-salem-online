@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { MAX_PLAYERS, MIN_PLAYERS } from '@salem/engine';
-import { useSalem, type ClientSnapshot } from './net';
+import { loginUrl, useAuthConfig, useSalem, type ClientSnapshot } from './net';
 import { Game } from './Game';
+import { Avatar } from './Avatar';
 import { LogPanel } from './LogPanel';
 
 export function App() {
@@ -13,10 +14,10 @@ export function App() {
   return <Game snap={snap} view={snap.view} act={salem.act} send={salem.send} error={salem.error} onLeave={salem.leave} />;
 }
 
-function Entry({ connect, busy, error, savedName }: ReturnType<typeof useSalem>) {
-  const [name, setName] = useState(savedName);
+function Entry({ connect, busy, error, me, logout }: ReturnType<typeof useSalem>) {
   const [code, setCode] = useState('');
-  const ready = name.trim().length > 0;
+  const [devName, setDevName] = useState('');
+  const config = useAuthConfig();
 
   return (
     <main className="entry">
@@ -25,32 +26,66 @@ function Entry({ connect, busy, error, savedName }: ReturnType<typeof useSalem>)
       </h1>
       <p className="lede">麻薩諸塞州，塞勒姆。女巫就藏在你們之中。指控你懷疑的人，保護你信任的人。小心，到了夜晚，事情就不一樣了。</p>
 
-      <form
-        className="entry-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (ready) void connect(code.trim() ? 'join' : 'create', name.trim(), code);
-        }}
-      >
-        <label>
-          你的名字
-          <input value={name} onChange={(e) => setName(e.target.value)} maxLength={16} placeholder="例如：約翰．普羅克特" autoFocus />
-        </label>
-        <label>
-          房號（要加入朋友的房間才需要填）
-          <input
-            value={code}
-            onChange={(e) => setCode(e.target.value.toUpperCase())}
-            maxLength={5}
-            placeholder="ABCDE"
-            className="code-input"
-          />
-        </label>
-        <button type="submit" className="primary" disabled={!ready || busy}>
-          {busy ? '連線中…' : code.trim() ? '加入房間' : '建立新房間'}
-        </button>
-        {error && <p className="error">{error}</p>}
-      </form>
+      {me ? (
+        <form
+          className="entry-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void connect(code.trim() ? 'join' : 'create', code);
+          }}
+        >
+          <div className="whoami">
+            <Avatar name={me.name} picture={me.picture} />
+            <span className="whoami-name">{me.name}</span>
+            <button type="button" className="ghost small" onClick={logout}>
+              登出
+            </button>
+          </div>
+          <label>
+            房號（要加入朋友的房間才需要填）
+            <input
+              value={code}
+              onChange={(e) => setCode(e.target.value.toUpperCase())}
+              maxLength={5}
+              placeholder="ABCDE"
+              className="code-input"
+            />
+          </label>
+          <button type="submit" className="primary" disabled={busy}>
+            {busy ? '連線中…' : code.trim() ? '加入房間' : '建立新房間'}
+          </button>
+          {error && <p className="error">{error}</p>}
+        </form>
+      ) : (
+        <div className="entry-form">
+          {config?.line !== false ? (
+            <a className="line-login" href={loginUrl('line')} aria-disabled={!config}>
+              用 LINE 登入
+            </a>
+          ) : (
+            <p className="error">伺服器還沒設定 LINE 登入（缺少 LINE_CHANNEL_ID / LINE_CHANNEL_SECRET）。</p>
+          )}
+          <p className="muted small-print">登入後會使用你的 LINE 名稱和頭像，讓朋友認得你。</p>
+          {config?.dev && (
+            <form
+              className="dev-login"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (devName.trim()) location.href = loginUrl('dev', devName.trim());
+              }}
+            >
+              <label>
+                開發用測試登入（只在本機開啟）
+                <input value={devName} onChange={(e) => setDevName(e.target.value)} maxLength={16} placeholder="輸入任意名字" />
+              </label>
+              <button type="submit" disabled={!devName.trim()}>
+                測試登入
+              </button>
+            </form>
+          )}
+          {error && <p className="error">{error}</p>}
+        </div>
+      )}
     </main>
   );
 }
@@ -70,6 +105,7 @@ function Lobby({ snap, send, leave, error }: { snap: ClientSnapshot } & ReturnTy
         <ol className="roster">
           {snap.lobby.map((p) => (
             <li key={p.id}>
+              <Avatar name={p.name} picture={p.picture} size={28} />
               {p.name}
               {p.id === snap.hostId && <span className="tag">房主</span>}
               {p.id === snap.me && <span className="tag">你</span>}

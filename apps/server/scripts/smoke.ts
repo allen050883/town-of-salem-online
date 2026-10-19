@@ -1,7 +1,7 @@
 /**
  * End-to-end smoke test: connect N bot clients to a running server, create a room, start a game,
  * and act randomly from each player's snapshot until the game ends.
- * Usage: npm run smoke -w @salem/server (start the server first)
+ * Usage: npm run smoke -w @salem/server (start the server first with AUTH_DEV_LOGIN=1)
  */
 import { Client, type Room } from '@colyseus/sdk';
 import type { Action, PlayerView } from '@salem/engine';
@@ -54,7 +54,9 @@ async function main() {
   let code = '';
   for (let i = 0; i < N; i++) {
     const client = new Client(url);
-    const opts = { playerId: `bot-${i}-${Date.now()}`, name: `Bot${i}` };
+    const res = await fetch(`${url.replace(/^ws/, 'http')}/auth/dev/login?name=Bot${i}-${Date.now() % 10000}`);
+    if (!res.ok) throw new Error(`Test login failed (${res.status}); start the server with AUTH_DEV_LOGIN=1`);
+    const opts = { token: ((await res.json()) as { token: string }).token };
     const room = i === 0 ? await client.create('salem', opts) : await client.joinById(code, opts);
     if (i === 0) code = room.roomId;
     rooms.push(room);

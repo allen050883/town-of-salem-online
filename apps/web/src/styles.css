@@ -99,7 +99,8 @@ button {
   border-radius: 4px;
   padding: 0.5rem 1rem;
 }
-button:disabled {
+/* Low specificity: keeps the browser's gray off disabled buttons without overriding card colors set by classes */
+button:where(:disabled) {
   cursor: default;
   color: inherit;
 }
@@ -420,10 +421,7 @@ button.small {
   background: var(--oxblood);
   border-color: var(--oxblood);
 }
-.is-night .is-night .pip {
-  border-color: var(--muted);
-}
-.pip.on {
+.is-night .pip.on {
   background: #c24a5b;
   border-color: #c24a5b;
 }
@@ -606,4 +604,58 @@ button.small {
   .tryal.is-pickable:hover {
     transform: none;
   }
+}
+
+/* ---------- Login ---------- */
+/* LINE brand guidelines: LINE green background, white text */
+.line-login {
+  display: block;
+  text-align: center;
+  padding: 0.75rem 1rem;
+  border-radius: 4px;
+  background: #06c755;
+  color: #fff;
+  font-weight: 700;
+  text-decoration: none;
+}
+.line-login:hover {
+  background: #05b34c;
+}
+.line-login[aria-disabled='true'] {
+  opacity: 0.6;
+  pointer-events: none;
+}
+.small-print {
+  font-size: 0.875rem;
+  margin: 0;
+}
+.dev-login {
+  display: flex;
+  gap: 0.5rem;
+  align-items: end;
+  padding-top: 1.25rem;
+  border-top: 1px dashed var(--rule);
+}
+.dev-login label {
+  flex: 1;
+}
+.whoami {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.whoami-name {
+  font: 600 1.15rem var(--serif);
+}
+.avatar {
+  border-radius: 50%;
+  object-fit: cover;
+  flex: none;
+}
+.avatar-fallback {
+  display: inline-grid;
+  place-items: center;
+  background: var(--indigo);
+  color: var(--on-color);
+  font: 600 0.85rem var(--serif);
 }

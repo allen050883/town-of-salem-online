@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ACCUSATION_THRESHOLD, CARD_COLOR, CARD_NAME, type Action, type Card, type PlayerId, type PlayerView, type PublicPlayer } from '@salem/engine';
 import type { ClientSnapshot } from './net';
 import { LogPanel } from './LogPanel';
+import { Avatar } from './Avatar';
 import { CARD_DESC, TRYAL_FULL, TRYAL_LABEL } from './text';
 
 interface Props {
@@ -121,6 +122,7 @@ export function Game({ snap, view, act, send, error, onLeave }: Props) {
             <PlayerRow
               key={id}
               p={view.players[id]!}
+              picture={snap.lobby.find((l) => l.id === id)?.picture}
               view={view}
               targetable={canTargetPlayer(id)}
               selectedFirst={sel.first === id}
@@ -187,6 +189,7 @@ export function Game({ snap, view, act, send, error, onLeave }: Props) {
 
 function PlayerRow(props: {
   p: PublicPlayer;
+  picture?: string;
   view: PlayerView;
   targetable: boolean;
   selectedFirst: boolean;
@@ -215,6 +218,7 @@ function PlayerRow(props: {
         .join(' ')}
     >
       <button className="pew-name" onClick={props.onPlayer} disabled={!targetable} aria-label={`選擇 ${p.name}`}>
+        <Avatar name={p.name} picture={props.picture} size={28} />
         <span className="name">{p.name}</span>
         {isMe && <span className="tag">你</span>}
         {p.isWitch && p.alive && !isMe && <span className="tag witch">女巫同伴</span>}

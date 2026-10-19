@@ -2,8 +2,14 @@
   "name": "town-of-salem-online",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*", "apps/*"],
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "scripts": {
+    "dev:server": "npm run dev -w @salem/server",
+    "dev:web": "npm run dev -w @salem/web",
+    "smoke": "npm run smoke -w @salem/server",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"
   }

@@ -1,7 +1,7 @@
 # town-of-salem-online
 獵巫鎮（Salem 1692）線上版：和朋友開房間，用房號加入，瀏覽器就能玩。
 
-規則與架構設計見 [docs/design.md](docs/design.md)。
+規則與架構設計見 [docs/design.md](docs/design.md)，部署到 NAS＋Cloudflare 見 [docs/deploy.md](docs/deploy.md)。
 
 ## 專案結構
 

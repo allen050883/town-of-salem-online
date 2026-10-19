@@ -1,0 +1,41 @@
+# For the NAS: game server + Cloudflare Tunnel
+# - Uses no NAS host ports; the two containers talk only on their own network, so they won't collide with other services
+# - In the Cloudflare Tunnel public hostname, set the service to http://salem:2567
+#
+# Usage (in this folder on the NAS):
+#   1. cp salem.env.example salem.env and fill it in
+#   2. docker compose up -d --build
+
+name: salem
+
+services:
+  salem:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: salem-server:latest
+    restart: unless-stopped
+    env_file: salem.env
+    environment:
+      NODE_ENV: production
+      PORT: '2567'
+    networks: [salem]
+    # Keep resources small so other NAS services aren't affected
+    mem_limit: 256m
+    cpus: 0.5
+    # To reach it directly on the LAN (e.g. an existing reverse proxy), uncomment and pick an unused port:
+    # ports:
+    #   - '25670:2567'
+
+  cloudflared:
+    image: cloudflare/cloudflared:2025.10.0
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?Put the tunnel token from the Cloudflare dashboard in TUNNEL_TOKEN in deploy/.env}
+    networks: [salem]
+    depends_on: [salem]
+    mem_limit: 128m
+
+networks:
+  salem:

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { Room, type Client } from '@colyseus/core';
+import { CloseCode, Room, type Client } from '@colyseus/core';
 import {
   DEFAULT_OPTIONS,
   MAX_PLAYERS,
@@ -15,6 +15,7 @@ import {
   type GameState,
   type PlayerId,
 } from '@salem/engine';
+import { CLOSE_REPLACED, RECONNECT_SECONDS } from './protocol';
 import type { ClientMessages, ClientSnapshot, JoinOptions, LogEntry, Member, ReplayRecord, RtcRelay } from './protocol';
 import { saveReplay } from './replays';
 
@@ -101,16 +102,15 @@ export class SalemRoom extends Room {
     for (const [sid, pid] of this.sessions) {
       if (pid === playerId && sid !== client.sessionId) {
         this.sessions.delete(sid);
-        this.clients.find((c) => c.sessionId === sid)?.leave();
+        this.clients.find((c) => c.sessionId === sid)?.leave(CLOSE_REPLACED);
       }
     }
     this.sessions.set(client.sessionId, playerId);
 
     const existing = this.member(playerId);
     if (existing) {
-      existing.connected = true;
       if (!this.game) existing.name = name;
-      if (this.game && this.hurried && waitingOn(this.game).includes(playerId)) this.restartTimer();
+      this.setConnected(playerId, true);
     } else if (this.game || options.spectate || this.lobby.length >= MAX_PLAYERS) {
       this.spectators.push({ id: playerId, name, connected: true });
       this.pushLog({ kind: 'event', channel: 'system', text: `${name} 進來觀戰` });
@@ -122,8 +122,20 @@ export class SalemRoom extends Room {
     this.broadcastSnapshots();
   }
 
-  onLeave(client: Client) {
+  async onLeave(client: Client, code?: number) {
     const pid = this.sessions.get(client.sessionId);
+    if (pid && code !== CloseCode.CONSENTED && code !== CLOSE_REPLACED) {
+      // Dropped connection: hold the session open so the client SDK can resume it
+      this.setConnected(pid, false);
+      try {
+        await this.allowReconnection(client, RECONNECT_SECONDS);
+        if (this.sessions.get(client.sessionId) === pid) this.setConnected(pid, true);
+        return;
+      } catch {
+        // Not resumed in time; if the member came back through a fresh join meanwhile, that session owns the seat
+        if (this.sessions.get(client.sessionId) !== pid) return;
+      }
+    }
     this.sessions.delete(client.sessionId);
     if (this.sessions.size === 0) this.scheduleEmptyDispose();
     if (!pid) return;
@@ -140,13 +152,31 @@ export class SalemRoom extends Room {
       if (!p) return;
       if (this.game) {
         // During a game, keep the seat; the timer acts on their behalf
-        p.connected = false;
-        this.pushLog({ kind: 'event', channel: 'system', text: `${p.name} 斷線了，等待重新連線…` });
+        if (p.connected) {
+          p.connected = false;
+          this.pushLog({ kind: 'event', channel: 'system', text: `${p.name} 離線了` });
+        }
         this.hurryIfAbandoned();
       } else {
         this.lobby = this.lobby.filter((x) => x.id !== pid);
         this.pushLog({ kind: 'event', channel: 'system', text: `${p.name} 離開了房間` });
       }
+    }
+    this.ensureHost();
+    this.broadcastSnapshots();
+  }
+
+  /** Show a member as online/offline while their session may still resume */
+  private setConnected(pid: PlayerId, connected: boolean) {
+    const m = this.member(pid);
+    if (!m || m.connected === connected) return;
+    m.connected = connected;
+    if (connected) {
+      if (this.game && this.isPlayer(pid)) this.pushLog({ kind: 'event', channel: 'system', text: `${m.name} 回來了` });
+      if (this.game && this.hurried && waitingOn(this.game).includes(pid)) this.restartTimer();
+    } else {
+      if (this.game && this.isPlayer(pid)) this.pushLog({ kind: 'event', channel: 'system', text: `${m.name} 斷線了，等待重新連線…` });
+      this.hurryIfAbandoned();
     }
     this.ensureHost();
     this.broadcastSnapshots();

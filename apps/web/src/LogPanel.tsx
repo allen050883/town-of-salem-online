@@ -1,20 +1,23 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ClientSnapshot } from './net';
+import type { ClientSnapshot, Send } from './net';
 
-const CHANNEL_LABEL = { public: '', witch: '女巫', dead: '亡者', system: '' } as const;
+const CHANNEL_LABEL = { public: '', witch: '女巫', dead: '亡者', spectator: '觀戰', system: '' } as const;
 
-export function LogPanel({ snap, send }: { snap: ClientSnapshot; send: (t: 'chat', p: { text: string }) => void }) {
+export function LogPanel({ snap, send }: { snap: ClientSnapshot; send: Send }) {
   const [text, setText] = useState('');
-  const endRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const last = snap.log.at(-1)?.id;
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: 'end' });
+    // Scroll the log box itself; scrollIntoView would also scroll the page on phones
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [last]);
 
   const v = snap.view;
   const meP = v?.players[v.me];
   let hint = '說點什麼…';
+  if (v && !meP && v.phase.kind !== 'game_over') hint = '觀戰聊天（只有觀戰者和亡者看得到）';
   if (v && meP) {
     const ph = v.phase;
     const closed = ph.kind === 'dawn' || (ph.kind === 'night' && ph.step !== 'confess');
@@ -24,7 +27,7 @@ export function LogPanel({ snap, send }: { snap: ClientSnapshot; send: (t: 'chat
 
   return (
     <aside className="log">
-      <div className="log-scroll" aria-live="polite">
+      <div className="log-scroll" aria-live="polite" ref={scrollRef}>
         {snap.log.map((e) => (
           <p key={e.id} className={`entry-${e.kind} ch-${e.channel}`}>
             {e.kind === 'chat' ? (
@@ -37,7 +40,6 @@ export function LogPanel({ snap, send }: { snap: ClientSnapshot; send: (t: 'chat
             )}
           </p>
         ))}
-        <div ref={endRef} />
       </div>
       <form
         className="chat"

@@ -42,6 +42,11 @@ export interface ClientSnapshot {
   lastReplayId: string | null;
 }
 
+/** Close code sent to a session replaced by the same member joining from another tab */
+export const CLOSE_REPLACED = 4005;
+/** Seconds a dropped connection may take to resume its session */
+export const RECONNECT_SECONDS = 60;
+
 export interface JoinOptions {
   playerId?: string;
   name?: string;

@@ -1,55 +1,32 @@
+import { randomUUID } from 'node:crypto';
 import { Room, type Client } from '@colyseus/core';
 import {
+  DEFAULT_OPTIONS,
   MAX_PLAYERS,
   MIN_PLAYERS,
+  ROLES,
   createGame,
   phaseTimeoutSeconds,
   projectFor,
   reduce,
+  waitingOn,
   type Action,
+  type GameOptions,
   type GameState,
   type PlayerId,
-  type PlayerView,
 } from '@salem/engine';
+import type { ClientMessages, ClientSnapshot, JoinOptions, LogEntry, Member, ReplayRecord, RtcRelay } from './protocol';
+import { saveReplay } from './replays';
 
-/** Entries in the room's message log: game events and chat share one stream */
-export interface LogEntry {
-  id: number;
-  kind: 'event' | 'chat';
-  channel: 'public' | 'witch' | 'dead' | 'system';
-  from?: string;
-  text: string;
-  /** Visible to; omitted means everyone */
-  to?: PlayerId[];
-}
-
-export interface LobbyPlayer {
-  id: PlayerId;
-  name: string;
-  connected: boolean;
-}
-
-/** Payload pushed to each client */
-export interface ClientSnapshot {
-  roomCode: string;
-  me: PlayerId;
-  hostId: PlayerId | null;
-  lobby: LobbyPlayer[];
-  view: PlayerView | null;
-  log: LogEntry[];
-  /** Phase deadline (epoch ms) */
-  deadline: number | null;
-  /** Dead players' remaining last words */
-  lastWordsLeft: number | null;
-}
-
-interface JoinOptions {
-  playerId?: string;
-  name?: string;
-}
+export type { ClientSnapshot, LogEntry } from './protocol';
 
 const LAST_WORDS = 3;
 const LOG_LIMIT = 300;
+const MAX_SPECTATORS = 20;
+/** When everyone the phase waits on is disconnected, the timer acts for them after this many seconds */
+const DISCONNECTED_SECONDS = 5;
+/** An empty room survives this long so players can refresh or reconnect */
+const EMPTY_ROOM_MS = { lobby: 30_000, game: 10 * 60_000 };
 
 function makeCode(): string {
   const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -57,44 +34,70 @@ function makeCode(): string {
 }
 
 export class SalemRoom extends Room {
-  maxClients = MAX_PLAYERS;
+  maxClients = MAX_PLAYERS + MAX_SPECTATORS;
+  /** Disposal is managed by hand so a game survives everyone refreshing at once */
+  autoDispose = false;
 
-  private lobby: LobbyPlayer[] = [];
+  private lobby: Member[] = [];
+  private spectators: Member[] = [];
   private hostId: PlayerId | null = null;
-  /** sessionId → playerId */
+  private options: GameOptions = { ...DEFAULT_OPTIONS };
+  /** sessionId → member id */
   private sessions = new Map<string, PlayerId>();
   private game: GameState | null = null;
+  private record: ReplayRecord | null = null;
+  private lastReplayId: string | null = null;
   private log: LogEntry[] = [];
   private logSeq = 0;
   private deadline: number | null = null;
   private timer: { clear(): void } | null = null;
+  /** The running timer was shortened because the players it waits on are disconnected */
+  private hurried = false;
+  private emptyTimer: { clear(): void } | null = null;
   private lastWords = new Map<PlayerId, number>();
+  private voice = new Set<PlayerId>();
 
   onCreate() {
     this.roomId = makeCode();
     this.setMetadata({ code: this.roomId });
 
-    this.onMessage('start', (client) => this.handleStart(client));
-    this.onMessage('action', (client, action: Action) => this.handleAction(client, action));
-    this.onMessage('chat', (client, msg: { text?: string }) => this.handleChat(client, msg?.text ?? ''));
-    this.onMessage('backToLobby', (client) => this.handleBackToLobby(client));
+    const on = <K extends keyof ClientMessages>(type: K, fn: (client: Client, msg: ClientMessages[K]) => void) =>
+      this.onMessage(type, (client, msg) => {
+        try {
+          fn(client, msg as ClientMessages[K]);
+        } catch (e) {
+          console.error(`message ${type} failed`, e);
+          this.sendError(client, '伺服器發生錯誤');
+        }
+      });
+    on('start', (client) => this.handleStart(client));
+    on('action', (client, action) => this.handleAction(client, action));
+    on('chat', (client, msg) => this.handleChat(client, typeof msg?.text === 'string' ? msg.text : ''));
+    on('backToLobby', (client) => this.handleBackToLobby(client));
+    on('options', (client, msg) => this.handleOptions(client, msg));
+    on('seat', (client, msg) => this.handleSeat(client, !!msg?.spectate));
+    on('voice', (client, msg) => this.handleVoice(client, !!msg?.on));
+    on('rtc', (client, msg) => this.handleRtc(client, msg));
     // Sent by the client once its handlers are registered, to fetch the current snapshot
-    this.onMessage('sync', (client) => this.sendSnapshot(client));
+    on('sync', (client) => this.sendSnapshot(client));
   }
 
   onAuth(_client: Client, options: JoinOptions) {
     const playerId = options?.playerId;
-    if (!playerId || typeof playerId !== 'string') throw new Error('缺少玩家識別碼');
-    const known = this.lobby.some((p) => p.id === playerId);
-    if (!known && this.game) throw new Error('遊戲已經開始，無法加入');
-    if (!known && this.lobby.length >= MAX_PLAYERS) throw new Error('房間已滿');
+    if (!playerId || typeof playerId !== 'string' || playerId.length > 64) throw new Error('缺少玩家識別碼');
+    if (this.member(playerId)) return true;
+    if (this.spectators.length >= MAX_SPECTATORS && (this.game || options.spectate || this.lobby.length >= MAX_PLAYERS)) {
+      throw new Error('房間已滿');
+    }
     return true;
   }
 
   onJoin(client: Client, options: JoinOptions) {
     const playerId = options.playerId!;
     const name = (options.name ?? '').trim().slice(0, 16) || '無名氏';
-    // The same player reconnecting (refresh / dropped connection): kick the old session
+    this.emptyTimer?.clear();
+    this.emptyTimer = null;
+    // The same member reconnecting (refresh / dropped connection): kick the old session
     for (const [sid, pid] of this.sessions) {
       if (pid === playerId && sid !== client.sessionId) {
         this.sessions.delete(sid);
@@ -103,39 +106,80 @@ export class SalemRoom extends Room {
     }
     this.sessions.set(client.sessionId, playerId);
 
-    const existing = this.lobby.find((p) => p.id === playerId);
+    const existing = this.member(playerId);
     if (existing) {
       existing.connected = true;
       if (!this.game) existing.name = name;
+      if (this.game && this.hurried && waitingOn(this.game).includes(playerId)) this.restartTimer();
+    } else if (this.game || options.spectate || this.lobby.length >= MAX_PLAYERS) {
+      this.spectators.push({ id: playerId, name, connected: true });
+      this.pushLog({ kind: 'event', channel: 'system', text: `${name} 進來觀戰` });
     } else {
       this.lobby.push({ id: playerId, name, connected: true });
       this.pushLog({ kind: 'event', channel: 'system', text: `${name} 加入了房間` });
     }
-    if (!this.hostId) this.hostId = playerId;
+    this.ensureHost();
     this.broadcastSnapshots();
   }
 
   onLeave(client: Client) {
     const pid = this.sessions.get(client.sessionId);
     this.sessions.delete(client.sessionId);
+    if (this.sessions.size === 0) this.scheduleEmptyDispose();
     if (!pid) return;
-    // If the player still has another live session (reconnected), skip this
+    // If the member still has another live session (reconnected), skip this
     if ([...this.sessions.values()].includes(pid)) return;
-    const p = this.lobby.find((x) => x.id === pid);
-    if (!p) return;
-    if (this.game) {
-      // During a game, keep the seat; the timer acts on their behalf
-      p.connected = false;
+    this.voice.delete(pid);
+
+    const spectator = this.spectators.find((x) => x.id === pid);
+    if (spectator) {
+      this.spectators = this.spectators.filter((x) => x.id !== pid);
+      this.pushLog({ kind: 'event', channel: 'system', text: `${spectator.name} 離開觀戰` });
     } else {
-      this.lobby = this.lobby.filter((x) => x.id !== pid);
-      this.pushLog({ kind: 'event', channel: 'system', text: `${p.name} 離開了房間` });
-      if (this.hostId === pid) this.hostId = this.lobby[0]?.id ?? null;
+      const p = this.lobby.find((x) => x.id === pid);
+      if (!p) return;
+      if (this.game) {
+        // During a game, keep the seat; the timer acts on their behalf
+        p.connected = false;
+        this.pushLog({ kind: 'event', channel: 'system', text: `${p.name} 斷線了，等待重新連線…` });
+        this.hurryIfAbandoned();
+      } else {
+        this.lobby = this.lobby.filter((x) => x.id !== pid);
+        this.pushLog({ kind: 'event', channel: 'system', text: `${p.name} 離開了房間` });
+      }
     }
+    this.ensureHost();
     this.broadcastSnapshots();
   }
 
   onDispose() {
     this.timer?.clear();
+    this.emptyTimer?.clear();
+  }
+
+  // ---------- Members ----------
+
+  private member(id: PlayerId): Member | undefined {
+    return this.lobby.find((p) => p.id === id) ?? this.spectators.find((p) => p.id === id);
+  }
+
+  private isPlayer(id: PlayerId) {
+    return this.lobby.some((p) => p.id === id);
+  }
+
+  /** The host is a connected seated player; pass it on when the host leaves or drops */
+  private ensureHost() {
+    const host = this.lobby.find((p) => p.id === this.hostId);
+    if (host?.connected) return;
+    this.hostId = this.lobby.find((p) => p.connected)?.id ?? host?.id ?? null;
+  }
+
+  private scheduleEmptyDispose() {
+    this.emptyTimer?.clear();
+    const ms = this.game && this.game.phase.kind !== 'game_over' ? EMPTY_ROOM_MS.game : EMPTY_ROOM_MS.lobby;
+    this.emptyTimer = this.clock.setTimeout(() => {
+      if (this.sessions.size === 0) void this.disconnect();
+    }, ms);
   }
 
   // ---------- Message handlers ----------
@@ -149,11 +193,32 @@ export class SalemRoom extends Room {
 
     // Random seats
     const seats = [...this.lobby].sort(() => Math.random() - 0.5).map((p) => ({ id: p.id, name: p.name }));
-    this.game = createGame(seats, Math.floor(Math.random() * 2 ** 31));
+    const seed = Math.floor(Math.random() * 2 ** 31);
+    this.game = createGame(seats, seed, this.options);
+    this.record = {
+      id: randomUUID(),
+      version: 1,
+      roomCode: this.roomId,
+      startedAt: Date.now(),
+      endedAt: null,
+      seats,
+      seed,
+      options: { ...this.options },
+      actions: [],
+      chat: [],
+      winner: null,
+    };
     this.lastWords.clear();
     this.log = [];
-    this.pushLog({ kind: 'event', channel: 'system', text: `遊戲開始！共 ${n} 名玩家。黎明：女巫正在決定把黑貓交給誰…` });
-    this.lock();
+    const intro = this.game.phase.kind === 'roles' ? '每個人先從兩位鎮公所角色中選一位。' : '黎明：女巫正在決定把黑貓交給誰…';
+    this.pushLog({ kind: 'event', channel: 'system', text: `遊戲開始！共 ${n} 名玩家。${intro}` });
+    if (this.game.phase.kind === 'dawn' && this.options.roles) {
+      this.pushLog({
+        kind: 'event',
+        channel: 'system',
+        text: `角色公開：${seats.map((s) => `${s.name}＝${ROLES[this.game!.players[s.id]!.role!].name}`).join('、')}`,
+      });
+    }
     this.afterStateChange();
   }
 
@@ -162,17 +227,44 @@ export class SalemRoom extends Room {
     if (pid !== this.hostId) return this.sendError(client, '只有房主可以回到大廳');
     if (!this.game || this.game.phase.kind !== 'game_over') return this.sendError(client, '遊戲尚未結束');
     this.game = null;
+    this.record = null;
     this.clearTimer();
     // Remove players who disconnected
     this.lobby = this.lobby.filter((p) => p.connected);
-    if (!this.lobby.some((p) => p.id === this.hostId)) this.hostId = this.lobby[0]?.id ?? null;
-    this.unlock();
+    this.ensureHost();
+    this.broadcastSnapshots();
+  }
+
+  private handleOptions(client: Client, patch: Partial<GameOptions>) {
+    const pid = this.sessions.get(client.sessionId);
+    if (pid !== this.hostId) return this.sendError(client, '只有房主可以調整規則');
+    if (this.game && this.game.phase.kind !== 'game_over') return this.sendError(client, '遊戲進行中不能調整規則');
+    if (typeof patch?.roles === 'boolean') this.options.roles = patch.roles;
+    if (typeof patch?.extraWitch === 'boolean') this.options.extraWitch = patch.extraWitch;
+    this.broadcastSnapshots();
+  }
+
+  private handleSeat(client: Client, spectate: boolean) {
+    const pid = this.sessions.get(client.sessionId);
+    if (!pid) return;
+    if (this.game && this.game.phase.kind !== 'game_over') return this.sendError(client, '遊戲進行中不能換位置');
+    if (this.game) return this.sendError(client, '請等房主回到大廳再換位置');
+    const m = this.member(pid)!;
+    if (spectate && this.isPlayer(pid)) {
+      this.lobby = this.lobby.filter((p) => p.id !== pid);
+      this.spectators.push(m);
+    } else if (!spectate && !this.isPlayer(pid)) {
+      if (this.lobby.length >= MAX_PLAYERS) return this.sendError(client, '座位已滿');
+      this.spectators = this.spectators.filter((p) => p.id !== pid);
+      this.lobby.push(m);
+    }
+    this.ensureHost();
     this.broadcastSnapshots();
   }
 
   private handleAction(client: Client, action: Action) {
     const pid = this.sessions.get(client.sessionId);
-    if (!pid || !this.game) return;
+    if (!pid || !this.game || !this.isPlayer(pid)) return;
     if (!action || typeof action !== 'object' || action.type === 'TIMEOUT') return;
     this.dispatch(pid, action, client);
   }
@@ -186,11 +278,25 @@ export class SalemRoom extends Room {
       return;
     }
     this.game = r.state;
+    this.record?.actions.push({ actor, action, at: Date.now() - this.record.startedAt });
     for (const e of r.events) this.pushLog({ kind: 'event', channel: 'public', text: e.text, to: e.visibleTo });
     for (const p of Object.values(this.game.players)) {
       if (!p.alive && !before.has(p.id)) this.lastWords.set(p.id, LAST_WORDS);
     }
+    if (this.game.phase.kind === 'game_over') this.finishRecord();
     this.afterStateChange();
+  }
+
+  private finishRecord() {
+    const r = this.record;
+    const ph = this.game?.phase;
+    if (!r || ph?.kind !== 'game_over') return;
+    r.endedAt = Date.now();
+    r.winner = ph.winner;
+    saveReplay(r);
+    this.lastReplayId = r.id;
+    this.record = null;
+    this.pushLog({ kind: 'event', channel: 'system', text: '這場對戰已經存檔，可以觀看重播。' });
   }
 
   private handleChat(client: Client, raw: string) {
@@ -198,7 +304,7 @@ export class SalemRoom extends Room {
     if (!pid) return;
     const text = raw.trim().slice(0, 300);
     if (!text) return;
-    const name = this.lobby.find((p) => p.id === pid)?.name ?? '?';
+    const name = this.member(pid)?.name ?? '?';
     const g = this.game;
 
     if (!g || g.phase.kind === 'game_over') {
@@ -206,8 +312,15 @@ export class SalemRoom extends Room {
       return this.broadcastSnapshots();
     }
 
+    const dead = Object.values(g.players).filter((p) => !p.alive).map((p) => p.id);
+    const watchers = [...dead, ...this.spectators.map((s) => s.id)];
     const me = g.players[pid];
-    if (!me) return;
+    if (!me) {
+      // Spectators talk among themselves and with the dead
+      this.chat({ channel: 'spectator', from: name, text, to: watchers });
+      return this.broadcastSnapshots();
+    }
+
     const ph = g.phase;
     const secretPhase = ph.kind === 'dawn' || (ph.kind === 'night' && ph.step !== 'confess');
 
@@ -215,11 +328,10 @@ export class SalemRoom extends Room {
       const left = this.lastWords.get(pid) ?? 0;
       if (left > 0 && !secretPhase) {
         this.lastWords.set(pid, left - 1);
-        this.pushLog({ kind: 'chat', channel: 'public', from: `${name}（遺言）`, text });
+        this.chat({ channel: 'public', from: `${name}（遺言）`, text });
       } else {
-        // After last words are used up, only other dead players can see
-        const dead = Object.values(g.players).filter((p) => !p.alive).map((p) => p.id);
-        this.pushLog({ kind: 'chat', channel: 'dead', from: name, text, to: dead });
+        // After last words are used up, only the dead and spectators can see
+        this.chat({ channel: 'dead', from: name, text, to: watchers });
       }
       return this.broadcastSnapshots();
     }
@@ -228,33 +340,82 @@ export class SalemRoom extends Room {
       // Eyes closed: only witches can talk in the witch channel
       if (!me.everWitch) return this.sendError(client, '現在是閉眼時間，不能說話');
       const witches = Object.values(g.players).filter((p) => p.alive && p.everWitch).map((p) => p.id);
-      this.pushLog({ kind: 'chat', channel: 'witch', from: name, text, to: witches });
+      this.chat({ channel: 'witch', from: name, text, to: witches });
       return this.broadcastSnapshots();
     }
 
-    this.pushLog({ kind: 'chat', channel: 'public', from: name, text });
+    this.chat({ channel: 'public', from: name, text });
     this.broadcastSnapshots();
+  }
+
+  /** Log a chat line and keep it in the game record */
+  private chat(e: { channel: LogEntry['channel']; from: string; text: string; to?: PlayerId[] }) {
+    this.pushLog({ kind: 'chat', ...e });
+    const r = this.record;
+    if (r) r.chat.push({ after: r.actions.length, at: Date.now() - r.startedAt, channel: e.channel, from: e.from, text: e.text });
+  }
+
+  // ---------- Voice (WebRTC signaling relay) ----------
+
+  private handleVoice(client: Client, on: boolean) {
+    const pid = this.sessions.get(client.sessionId);
+    if (!pid) return;
+    if (on) this.voice.add(pid);
+    else this.voice.delete(pid);
+    this.broadcastSnapshots();
+  }
+
+  private handleRtc(client: Client, msg: ClientMessages['rtc']) {
+    const from = this.sessions.get(client.sessionId);
+    if (!from || !msg || typeof msg.to !== 'string' || !msg.data || typeof msg.data !== 'object') return;
+    if (!this.voice.has(from) || !this.voice.has(msg.to)) return;
+    const relay: RtcRelay = { from, data: msg.data };
+    for (const c of this.clients) {
+      if (this.sessions.get(c.sessionId) === msg.to) c.send('rtc', relay);
+    }
   }
 
   // ---------- Timers and broadcasting ----------
 
   private afterStateChange() {
+    this.restartTimer();
+    this.broadcastSnapshots();
+  }
+
+  private restartTimer() {
     this.clearTimer();
     const secs = this.game ? phaseTimeoutSeconds(this.game) : null;
-    if (secs != null) {
-      this.deadline = Date.now() + secs * 1000;
-      this.timer = this.clock.setTimeout(() => {
-        this.timer = null;
-        this.dispatch('system', { type: 'TIMEOUT' });
-      }, secs * 1000);
-    }
-    this.broadcastSnapshots();
+    if (secs == null) return;
+    this.schedule(secs);
+    this.hurryIfAbandoned();
+  }
+
+  private schedule(secs: number) {
+    this.timer?.clear();
+    this.deadline = Date.now() + secs * 1000;
+    this.timer = this.clock.setTimeout(() => {
+      this.timer = null;
+      this.hurried = false;
+      this.dispatch('system', { type: 'TIMEOUT' });
+    }, secs * 1000);
+  }
+
+  /** If every player the phase waits on is disconnected, don't make the table wait the full time */
+  private hurryIfAbandoned() {
+    if (!this.game || !this.timer || this.deadline == null) return;
+    const waiting = waitingOn(this.game);
+    if (waiting.length === 0) return;
+    const allGone = waiting.every((id) => !this.lobby.find((p) => p.id === id)?.connected);
+    if (!allGone || this.deadline - Date.now() <= DISCONNECTED_SECONDS * 1000) return;
+    this.schedule(DISCONNECTED_SECONDS);
+    this.hurried = true;
   }
 
   private clearTimer() {
     this.timer?.clear();
     this.timer = null;
     this.deadline = null;
+    this.hurried = false;
   }
 
   private pushLog(e: Omit<LogEntry, 'id'>) {
@@ -272,12 +433,17 @@ export class SalemRoom extends Room {
     const snap: ClientSnapshot = {
       roomCode: this.roomId,
       me: pid,
+      seat: this.isPlayer(pid) ? 'player' : 'spectator',
       hostId: this.hostId,
       lobby: this.lobby,
+      spectators: this.spectators,
+      options: this.options,
       view: this.game ? projectFor(this.game, pid) : null,
       log: this.log.filter((e) => !e.to || e.to.includes(pid)),
       deadline: this.deadline,
       lastWordsLeft: this.game?.players[pid]?.alive === false ? (this.lastWords.get(pid) ?? 0) : null,
+      voice: [...this.voice],
+      lastReplayId: this.lastReplayId,
     };
     client.send('snapshot', snap);
   }

@@ -27,5 +27,5 @@ export const TRYAL_LABEL: Record<TryalKind, string> = {
 export const TRYAL_FULL: Record<TryalKind, string> = {
   witch: '女巫',
   constable: '警長',
-  not_a_witch: '非女巫',
+  not_a_witch: '平民',
 };

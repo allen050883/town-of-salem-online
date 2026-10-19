@@ -16,7 +16,7 @@ import type {
 const TRYAL_NAME: Record<Tryal['kind'], string> = {
   witch: '女巫',
   constable: '警長',
-  not_a_witch: '非女巫',
+  not_a_witch: '平民',
 };
 
 // ---------- Pure query helpers (also used by projection and server) ----------

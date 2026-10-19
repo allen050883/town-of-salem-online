@@ -103,12 +103,15 @@ export function useSalem() {
   );
 
   const connect = useCallback(
-    async (mode: 'create' | 'join', name: string, code?: string, spectate = false) => {
+    /** bots: computer players to seat right away (solo play) */
+    async (mode: 'create' | 'join', name: string, code?: string, spectate = false, bots = 0) => {
       setBusy(true);
       setError(null);
       storage('salem.name', name);
       try {
-        attach(await join(mode, name, code, spectate));
+        const room = await join(mode, name, code, spectate);
+        attach(room);
+        if (bots > 0) room.send('addBots', { count: bots });
       } catch (e) {
         setError(e instanceof Error ? e.message : '無法連線到伺服器');
         if (mode === 'join') storage('salem.room', null);

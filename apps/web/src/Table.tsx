@@ -52,6 +52,7 @@ export interface RowProps {
   onFront: (c: Card) => void;
   offline?: boolean;
   voice?: boolean;
+  bot?: boolean;
 }
 
 export function PlayerRow(props: RowProps) {
@@ -83,6 +84,7 @@ export function PlayerRow(props: RowProps) {
           {p.isWitch && p.alive && !isMe && <span className="tag witch">{view.amWitch ? '女巫同伴' : '女巫'}</span>}
           {!p.alive && <span className="tag">{p.isWitch ? '已死・女巫' : '已死'}</span>}
           {props.offline && <span className="tag offline">離線</span>}
+          {props.bot && <span className="tag">電腦</span>}
           {props.voice && <span className="tag">語音</span>}
           {waiting && <span className="tag thinking">行動中</span>}
         </span>

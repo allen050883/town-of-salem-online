@@ -52,6 +52,7 @@ export function Game({ snap, view, act, send, error, connection, voice, onLeave 
   const isAlive = (id: PlayerId) => view.players[id]!.alive;
   const offline = new Set(snap.lobby.filter((p) => !p.connected).map((p) => p.id));
   const voiceOn = new Set(snap.voice);
+  const bots = new Set(snap.lobby.filter((p) => p.bot).map((p) => p.id));
 
   // ----- Which players / cards can be clicked right now -----
   function canTargetPlayer(id: PlayerId): boolean {
@@ -174,6 +175,7 @@ export function Game({ snap, view, act, send, error, connection, voice, onLeave 
               onFront={(c) => onFront(id, c)}
               offline={offline.has(id)}
               voice={voiceOn.has(id)}
+              bot={bots.has(id)}
             />
           ))}
         </section>

@@ -8,6 +8,9 @@ import { Replay } from './Replay';
 import { useVoice, type Voice } from './voice';
 import { VoiceControls } from './VoiceControls';
 
+/** Computer players seated by the solo-play button (a 5-player table) */
+const SOLO_BOTS = 4;
+
 export function App() {
   const replayId = new URLSearchParams(location.search).get('replay');
   const [replay, setReplay] = useState<ReplayRecord | null>(null);
@@ -95,6 +98,11 @@ function Entry({ salem, onReplay, replayError }: { salem: Salem; onReplay: (r: R
         <button type="submit" className="primary" disabled={!ready || busy}>
           {busy ? '連線中…' : code.trim() ? (spectate ? '進去觀戰' : '加入房間') : '建立新房間'}
         </button>
+        {!code.trim() && (
+          <button type="button" disabled={!ready || busy} onClick={() => void connect('create', name.trim(), undefined, false, SOLO_BOTS)}>
+            單人遊戲（和 {SOLO_BOTS} 位電腦玩家）
+          </button>
+        )}
         {error && <p className="error">{error}</p>}
       </form>
 
@@ -172,13 +180,31 @@ function Lobby({ salem, snap, voice }: { salem: Salem; snap: ClientSnapshot; voi
           {snap.lobby.map((p) => (
             <li key={p.id}>
               {p.name}
+              {p.bot && <span className="tag">電腦</span>}
               {p.id === snap.hostId && <span className="tag">房主</span>}
               {p.id === snap.me && <span className="tag">你</span>}
               {!p.connected && <span className="tag offline">離線</span>}
               {snap.voice.includes(p.id) && <span className="tag">語音</span>}
+              {p.bot && isHost && (
+                <button className="ghost small" onClick={() => send('removeBot', { id: p.id })} aria-label={`移除電腦玩家 ${p.name}`}>
+                  移除
+                </button>
+              )}
             </li>
           ))}
         </ol>
+        {isHost && (
+          <div className="turn-actions">
+            <button className="small" onClick={() => send('addBots', { count: 1 })} disabled={n >= MAX_PLAYERS}>
+              加入電腦玩家
+            </button>
+            {n < MIN_PLAYERS && (
+              <button className="small" onClick={() => send('addBots', { count: MIN_PLAYERS - n })}>
+                用電腦補到 {MIN_PLAYERS} 人
+              </button>
+            )}
+          </div>
+        )}
 
         {snap.spectators.length > 0 && (
           <>

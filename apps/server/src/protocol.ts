@@ -18,6 +18,8 @@ export interface Member {
   id: PlayerId;
   name: string;
   connected: boolean;
+  /** A computer player run by the server */
+  bot?: boolean;
 }
 
 /** Payload pushed to each client */
@@ -75,6 +77,9 @@ export interface ClientMessages {
   options: Partial<GameOptions>;
   /** Spectator takes a free seat / player moves to the spectator benches (lobby only) */
   seat: { spectate: boolean };
+  /** Host only, in the lobby: add computer players / remove one */
+  addBots: { count: number };
+  removeBot: { id: PlayerId };
   voice: { on: boolean };
   rtc: RtcSignal;
 }

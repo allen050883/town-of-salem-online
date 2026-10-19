@@ -5,6 +5,7 @@ import {
   MAX_PLAYERS,
   MIN_PLAYERS,
   ROLES,
+  botAction,
   createGame,
   phaseTimeoutSeconds,
   projectFor,
@@ -28,6 +29,8 @@ const MAX_SPECTATORS = 20;
 const DISCONNECTED_SECONDS = 5;
 /** An empty room survives this long so players can refresh or reconnect */
 const EMPTY_ROOM_MS = { lobby: 30_000, game: 10 * 60_000 };
+/** Computer players are named after people accused in 1692 (none of them is a Town Hall character) */
+const BOT_NAMES = ['Bridget', 'Susannah', 'Elizabeth', 'Margaret', 'Wilmot', 'Lydia', 'Dorcas', 'Alice', 'Mary', 'Samuel', 'Roger', 'Ann'];
 
 function makeCode(): string {
   const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -57,6 +60,7 @@ export class SalemRoom extends Room {
   private emptyTimer: { clear(): void } | null = null;
   private lastWords = new Map<PlayerId, number>();
   private voice = new Set<PlayerId>();
+  private botTimers = new Map<PlayerId, { clear(): void }>();
 
   onCreate() {
     this.roomId = makeCode();
@@ -77,6 +81,8 @@ export class SalemRoom extends Room {
     on('backToLobby', (client) => this.handleBackToLobby(client));
     on('options', (client, msg) => this.handleOptions(client, msg));
     on('seat', (client, msg) => this.handleSeat(client, !!msg?.spectate));
+    on('addBots', (client, msg) => this.handleAddBots(client, msg?.count ?? 1));
+    on('removeBot', (client, msg) => this.handleRemoveBot(client, String(msg?.id ?? '')));
     on('voice', (client, msg) => this.handleVoice(client, !!msg?.on));
     on('rtc', (client, msg) => this.handleRtc(client, msg));
     // Sent by the client once its handlers are registered, to fetch the current snapshot
@@ -185,6 +191,7 @@ export class SalemRoom extends Room {
   onDispose() {
     this.timer?.clear();
     this.emptyTimer?.clear();
+    for (const t of this.botTimers.values()) t.clear();
   }
 
   // ---------- Members ----------
@@ -200,8 +207,63 @@ export class SalemRoom extends Room {
   /** The host is a connected seated player; pass it on when the host leaves or drops */
   private ensureHost() {
     const host = this.lobby.find((p) => p.id === this.hostId);
-    if (host?.connected) return;
-    this.hostId = this.lobby.find((p) => p.connected)?.id ?? host?.id ?? null;
+    if (host?.connected && !host.bot) return;
+    this.hostId = this.lobby.find((p) => p.connected && !p.bot)?.id ?? (host && !host.bot ? host.id : null);
+  }
+
+  // ---------- Computer players ----------
+
+  private handleAddBots(client: Client, count: number) {
+    if (this.sessions.get(client.sessionId) !== this.hostId) return this.sendError(client, '只有房主可以加入電腦玩家');
+    if (this.game && this.game.phase.kind !== 'game_over') return this.sendError(client, '遊戲進行中不能加入電腦玩家');
+    const n = Math.max(1, Math.min(Math.floor(Number(count) || 1), MAX_PLAYERS - this.lobby.length));
+    if (this.lobby.length >= MAX_PLAYERS) return this.sendError(client, '座位已滿');
+    for (let i = 0; i < n; i++) {
+      const used = new Set(this.lobby.map((p) => p.name));
+      const name = BOT_NAMES.find((x) => !used.has(x)) ?? `電腦 ${this.lobby.length + 1}`;
+      this.lobby.push({ id: `bot-${randomUUID()}`, name, connected: true, bot: true });
+    }
+    this.pushLog({ kind: 'event', channel: 'system', text: `加入了 ${n} 位電腦玩家` });
+    this.broadcastSnapshots();
+  }
+
+  private handleRemoveBot(client: Client, id: PlayerId) {
+    if (this.sessions.get(client.sessionId) !== this.hostId) return this.sendError(client, '只有房主可以移除電腦玩家');
+    if (this.game && this.game.phase.kind !== 'game_over') return this.sendError(client, '遊戲進行中不能移除電腦玩家');
+    const bot = this.lobby.find((p) => p.id === id && p.bot);
+    if (!bot) return;
+    this.lobby = this.lobby.filter((p) => p !== bot);
+    this.pushLog({ kind: 'event', channel: 'system', text: `${bot.name}（電腦）離開了房間` });
+    this.broadcastSnapshots();
+  }
+
+  /** After every change, let each computer player the game waits on act after a short, human-feeling pause */
+  private scheduleBots() {
+    for (const t of this.botTimers.values()) t.clear();
+    this.botTimers.clear();
+    const g = this.game;
+    if (!g || g.phase.kind === 'game_over') return;
+    for (const id of waitingOn(g)) {
+      if (!this.lobby.find((p) => p.id === id)?.bot) continue;
+      const base = g.phase.kind === 'turn' ? 1300 : 800;
+      this.botTimers.set(
+        id,
+        this.clock.setTimeout(() => {
+          this.botTimers.delete(id);
+          this.botAct(id);
+        }, base + Math.random() * 1000),
+      );
+    }
+  }
+
+  private botAct(id: PlayerId) {
+    if (!this.game) return;
+    const action = botAction(projectFor(this.game, id));
+    if (action && this.dispatch(id, action)) return;
+    // The bot's choice was rejected: fall back to something always safe, or leave it to the phase timer
+    for (const a of [{ type: 'END_TURN' }, { type: 'DRAW' }, { type: 'NIGHT_PASS' }] as Action[]) {
+      if (this.dispatch(id, a)) return;
+    }
   }
 
   private scheduleEmptyDispose() {
@@ -299,13 +361,14 @@ export class SalemRoom extends Room {
     this.dispatch(pid, action, client);
   }
 
-  private dispatch(actor: PlayerId | 'system', action: Action, client?: Client) {
-    if (!this.game) return;
+  /** Apply an action; returns whether the engine accepted it */
+  private dispatch(actor: PlayerId | 'system', action: Action, client?: Client): boolean {
+    if (!this.game) return false;
     const before = new Set(Object.values(this.game.players).filter((p) => !p.alive).map((p) => p.id));
     const r = reduce(this.game, { actor, action });
     if (!r.ok) {
       if (client) this.sendError(client, r.error);
-      return;
+      return false;
     }
     this.game = r.state;
     this.record?.actions.push({ actor, action, at: Date.now() - this.record.startedAt });
@@ -315,6 +378,7 @@ export class SalemRoom extends Room {
     }
     if (this.game.phase.kind === 'game_over') this.finishRecord();
     this.afterStateChange();
+    return true;
   }
 
   private finishRecord() {
@@ -409,6 +473,7 @@ export class SalemRoom extends Room {
 
   private afterStateChange() {
     this.restartTimer();
+    this.scheduleBots();
     this.broadcastSnapshots();
   }
 

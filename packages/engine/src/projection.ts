@@ -32,7 +32,7 @@ export interface PublicPlayer {
 export type PhaseView =
   | { kind: 'dawn'; mustAct: boolean; votes: Record<PlayerId, PlayerId> | null }
   | { kind: 'turn' }
-  | { kind: 'reveal'; chooser: PlayerId; target: PlayerId }
+  | { kind: 'reveal'; chooser: PlayerId; target: PlayerId; /** resume: accusation trial; conspiracy_pass: conspiracy reveals the black cat holder */ then: 'resume' | 'conspiracy_pass' }
   | {
       kind: 'night';
       step: 'witches' | 'constable' | 'confess';
@@ -96,7 +96,7 @@ function projectPhase(s: GameState, me: PlayerId, amWitch: boolean, amConstable:
     case 'turn':
       return { kind: 'turn' };
     case 'reveal':
-      return { kind: 'reveal', chooser: ph.chooser, target: ph.target };
+      return { kind: 'reveal', chooser: ph.chooser, target: ph.target, then: ph.then };
     case 'night': {
       const mustAct =
         alive &&

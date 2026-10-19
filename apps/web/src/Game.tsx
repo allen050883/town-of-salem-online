@@ -1,9 +1,47 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ACCUSATION_THRESHOLD, CARD_COLOR, CARD_NAME, type Action, type Card, type PlayerId, type PlayerView, type PublicPlayer } from '@salem/engine';
 import type { ClientSnapshot } from './net';
 import { LogPanel } from './LogPanel';
 import { Avatar } from './Avatar';
 import { CARD_DESC, TRYAL_FULL, TRYAL_LABEL } from './text';
+import { CARD_W, CardFace } from './CardFace';
+
+/** Hand card scale: half size on desktop, smaller on phones */
+const HAND_SCALE = 0.5;
+const HAND_SCALE_NARROW = 0.4;
+
+function useHandScale() {
+  const query = '(max-width: 760px)';
+  const [narrow, setNarrow] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const onChange = () => setNarrow(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  return narrow ? HAND_SCALE_NARROW : HAND_SCALE;
+}
+
+const HAND_GAP = 8;
+
+/** When the hand doesn't fit on one row, compute how much each card should overlap the previous one (negative px); 0 when it fits */
+function useHandOverlap(count: number, cardWidth: number) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setWidth(el.clientWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  if (count < 2 || width === 0) return { ref, overlap: 0 };
+  const need = count * cardWidth + (count - 1) * HAND_GAP;
+  if (need <= width) return { ref, overlap: 0 };
+  // Overlap at most down to 30% of the card width still showing, so the card name stays visible
+  const step = Math.max((width - cardWidth) / (count - 1), cardWidth * 0.3);
+  return { ref, overlap: step - cardWidth - HAND_GAP };
+}
 
 interface Props {
   snap: ClientSnapshot;
@@ -23,6 +61,8 @@ const NONE: Selection = { card: null, first: null };
 
 export function Game({ snap, view, act, send, error, onLeave }: Props) {
   const [sel, setSel] = useState<Selection>(NONE);
+  const handScale = useHandScale();
+  const hand = useHandOverlap(view.myHand.length, CARD_W * handScale);
   const ph = view.phase;
   const me = view.players[view.me]!;
   const myTurn = ph.kind === 'turn' && view.turn.player === view.me && me.alive;
@@ -123,6 +163,7 @@ export function Game({ snap, view, act, send, error, onLeave }: Props) {
               key={id}
               p={view.players[id]!}
               picture={snap.lobby.find((l) => l.id === id)?.picture}
+              bot={!!snap.lobby.find((l) => l.id === id)?.bot}
               view={view}
               targetable={canTargetPlayer(id)}
               selectedFirst={sel.first === id}
@@ -143,18 +184,19 @@ export function Game({ snap, view, act, send, error, onLeave }: Props) {
           <GameOver view={view} isHost={snap.hostId === view.me} onBack={() => send('backToLobby')} />
         ) : (
           <>
-            <div className="hand" role="list" aria-label="你的手牌">
+            <div className="hand" role="list" aria-label="你的手牌" ref={hand.ref} style={{ ['--overlap' as string]: `${hand.overlap}px` }}>
               {view.myHand.length === 0 && <p className="muted">沒有手牌</p>}
               {view.myHand.map((c) => (
                 <button
                   key={c.id}
                   role="listitem"
-                  className={`card c-${CARD_COLOR[c.type]} ${sel.card?.id === c.id ? 'is-selected' : ''}`}
+                  className={`hand-card ${sel.card?.id === c.id ? 'is-selected' : ''}`}
                   disabled={!myTurn || view.turn.mode === 'drawing'}
                   onClick={() => setSel(sel.card?.id === c.id ? NONE : { card: c, first: null })}
-                  title={CARD_DESC[c.type]}
+                  title={`${CARD_NAME[c.type]}：${CARD_DESC[c.type]}`}
+                  aria-label={`${CARD_NAME[c.type]}：${CARD_DESC[c.type]}`}
                 >
-                  {CARD_NAME[c.type]}
+                  <CardFace kind={c.type} scale={handScale} compact />
                 </button>
               ))}
             </div>
@@ -183,6 +225,12 @@ export function Game({ snap, view, act, send, error, onLeave }: Props) {
           </>
         )}
       </footer>
+
+      {sel.card && (
+        <aside className="card-detail" aria-hidden="true">
+          <CardFace kind={sel.card.type} scale={handScale === HAND_SCALE ? 1 : 0.8} />
+        </aside>
+      )}
     </div>
   );
 }
@@ -190,6 +238,7 @@ export function Game({ snap, view, act, send, error, onLeave }: Props) {
 function PlayerRow(props: {
   p: PublicPlayer;
   picture?: string;
+  bot: boolean;
   view: PlayerView;
   targetable: boolean;
   selectedFirst: boolean;
@@ -221,6 +270,7 @@ function PlayerRow(props: {
         <Avatar name={p.name} picture={props.picture} size={28} />
         <span className="name">{p.name}</span>
         {isMe && <span className="tag">你</span>}
+        {props.bot && <span className="tag">電腦</span>}
         {p.isWitch && p.alive && !isMe && <span className="tag witch">女巫同伴</span>}
         {!p.alive && <span className="tag">{p.isWitch ? '已死・女巫' : '已死'}</span>}
         <span className="hand-count" title="手牌數">
@@ -317,8 +367,16 @@ function Prompt({ view, sel, myTurn }: { view: PlayerView; sel: Selection; myTur
     (ph.kind === 'conspiracy' && ph.mustPick) ||
     myTurn;
 
+  // When a black card fires, show its illustrated card beside the prompt
+  const event = ph.kind === 'night' ? 'night' : ph.kind === 'conspiracy' || (ph.kind === 'reveal' && ph.then === 'conspiracy_pass') ? 'conspiracy' : null;
+
   return (
-    <p className={`prompt ${urgent ? 'is-urgent' : ''}`} role="status">
+    <p className={`prompt ${urgent ? 'is-urgent' : ''} ${event ? 'has-event' : ''}`} role="status">
+      {event && (
+        <span className="event-card">
+          <CardFace kind={event} scale={0.3} compact />
+        </span>
+      )}
       {view.amWitch && me.alive && ph.kind !== 'game_over' && <span className="role-badge witch">女巫</span>}
       {view.amConstable && me.alive && ph.kind !== 'game_over' && <span className="role-badge">警長</span>}
       {text}

@@ -365,7 +365,10 @@ button.small {
 }
 .tryal.k-hidden {
   border-color: var(--indigo);
-  background: repeating-linear-gradient(45deg, var(--indigo) 0 3px, color-mix(in srgb, var(--indigo) 70%, var(--bg)) 3px 6px);
+  background-color: var(--indigo);
+  background-image:
+    repeating-linear-gradient(45deg, rgba(243, 241, 236, 0.16) 0 2px, transparent 2px 6px),
+    repeating-linear-gradient(-45deg, rgba(243, 241, 236, 0.16) 0 2px, transparent 2px 6px);
 }
 /* Unrevealed but visible to me: dashed border */
 .tryal:not(.is-revealed):not(.k-hidden) {
@@ -389,10 +392,13 @@ button.small {
   background: var(--oxblood);
 }
 .tryal.is-revealed.k-constable {
-  background: var(--wax);
+  /* Fixed gold with dark text: white text on gold is below 3:1 */
+  background: #b8862b;
+  color: #1d2633;
 }
 .tryal.is-revealed.k-not_a_witch {
-  background: var(--muted);
+  /* Fixed gray: at night var(--muted) turns light and white text loses contrast */
+  background: #5a6573;
 }
 .tryal.is-pickable {
   outline: 2px solid var(--wax);
@@ -705,4 +711,185 @@ button.small {
 /* The gallery reuses table components; clear their grid positioning from the player rows */
 .gallery figure > * {
   grid-area: auto;
+}
+
+/* ---------- Illustrated cards (from the Claude Design canvas "獵巫鎮卡牌設計") ---------- */
+.cardface-box {
+  display: inline-block;
+  position: relative;
+  flex: none;
+}
+.cardface {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 240px;
+  height: 336px;
+  box-sizing: border-box;
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background-size: 22px 22px;
+  transform-origin: top left;
+  text-align: center;
+}
+.cardface-art {
+  display: block;
+  width: 216px;
+  height: 173px;
+  flex: none;
+  box-sizing: border-box;
+  border: 2px solid;
+  border-radius: 3px;
+}
+.cardface-band {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid;
+  border-radius: 3px;
+  padding: 10px 10px 12px;
+}
+.cardface-name {
+  font: 900 26px/1.1 var(--serif);
+  letter-spacing: 0.3em;
+  padding-left: 0.3em;
+}
+.cardface.is-compact .cardface-name {
+  /* At the reduced hand size the name is the main thing to read: enlarge it */
+  font-size: 34px;
+  margin-top: 4px;
+}
+.cardface-rule {
+  width: 40px;
+  height: 1px;
+}
+.cardface-text {
+  flex-grow: 1;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.cardface.is-compact .cardface-rule {
+  flex-grow: 0;
+}
+.cardface.is-compact .cardface-band {
+  justify-content: space-between;
+}
+.cardface-foot {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+}
+.cardface.is-compact .cardface-foot {
+  font-size: 20px;
+}
+.cardface-pips {
+  display: flex;
+  gap: 4px;
+}
+.cardface-pips span {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-sizing: border-box;
+  border: 1.5px solid currentColor;
+}
+.cardface-pips span.on {
+  background: currentColor;
+}
+.cardface.is-compact .cardface-pips {
+  gap: 7px;
+}
+.cardface.is-compact .cardface-pips span {
+  width: 16px;
+  height: 16px;
+  border-width: 2.5px;
+}
+
+/* A hand card is a button wrapping the card face */
+.hand-card {
+  padding: 0;
+  border: none;
+  background: none;
+  border-radius: 5px;
+  line-height: 0;
+  transition: transform 0.15s ease;
+}
+.hand-card:disabled {
+  opacity: 0.6;
+}
+.hand-card:not(:disabled):hover {
+  transform: translateY(-4px);
+}
+.hand-card.is-selected {
+  transform: translateY(-12px);
+  outline: 3px solid var(--wax);
+  outline-offset: 3px;
+}
+
+/* Full card for the selected hand card, floating above the hand bar */
+.card-detail {
+  position: fixed;
+  right: max(16px, env(safe-area-inset-right, 0px));
+  bottom: calc(var(--hand-h, 13rem) + 12px);
+  z-index: 5;
+  line-height: 0;
+  filter: drop-shadow(0 10px 24px rgba(0, 0, 0, 0.35));
+  pointer-events: none;
+}
+
+/* Night / conspiracy thumbnail next to the action prompt */
+.event-card {
+  line-height: 0;
+  margin: -0.25rem 0;
+}
+.prompt-text {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 760px) {
+  .hand {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-top: 14px;
+  }
+  .card-detail {
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hand-card {
+    transition: none;
+  }
+}
+.prompt.has-event {
+  align-items: center;
+}
+.roster-remove {
+  margin-left: auto;
+}
+
+/* Hand: one row; when crowded, cards overlap like a real hand (--overlap is computed by the component) and lift on hover or selection */
+.hand {
+  flex-wrap: nowrap;
+  min-width: 0;
+  gap: 8px;
+  padding-top: 14px;
+}
+.hand-card + .hand-card {
+  margin-left: var(--overlap, 0px);
+}
+.hand-card:hover,
+.hand-card:focus-visible,
+.hand-card.is-selected {
+  position: relative;
+  z-index: 2;
 }

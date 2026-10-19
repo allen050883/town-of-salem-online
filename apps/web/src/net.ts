@@ -140,7 +140,7 @@ export function useSalem() {
     setSnap(null);
   }, []);
 
-  const send = useCallback((type: 'start' | 'backToLobby' | 'chat' | 'action', payload?: Action | { text: string }) => {
+  const send = useCallback((type: 'start' | 'backToLobby' | 'chat' | 'action' | 'addBot' | 'removeBot', payload?: Action | { text: string } | { id: string }) => {
     setError(null);
     roomRef.current?.send(type, payload);
   }, []);

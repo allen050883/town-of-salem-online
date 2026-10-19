@@ -109,10 +109,19 @@ function Lobby({ snap, send, leave, error }: { snap: ClientSnapshot } & ReturnTy
               {p.name}
               {p.id === snap.hostId && <span className="tag">房主</span>}
               {p.id === snap.me && <span className="tag">你</span>}
+              {p.bot && <span className="tag">電腦</span>}
+              {p.bot && isHost && (
+                <button className="ghost small roster-remove" onClick={() => send('removeBot', { id: p.id })} aria-label={`移除電腦玩家 ${p.name}`}>
+                  移除
+                </button>
+              )}
             </li>
           ))}
         </ol>
 
+        {isHost && n < MAX_PLAYERS && (
+          <button onClick={() => send('addBot')}>加入電腦玩家</button>
+        )}
         {isHost ? (
           <button className="primary" disabled={!canStart} onClick={() => send('start')}>
             {canStart ? '開始遊戲' : `還需要 ${MIN_PLAYERS - n} 人才能開始`}

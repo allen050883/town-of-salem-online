@@ -6,6 +6,7 @@ import {
   phaseTimeoutSeconds,
   projectFor,
   reduce,
+  botAction,
   type Action,
   type GameState,
   type PlayerId,
@@ -29,6 +30,8 @@ export interface LobbyPlayer {
   name: string;
   picture?: string;
   connected: boolean;
+  /** Bot player (driven by the server) */
+  bot?: boolean;
 }
 
 /** Payload pushed to each client */
@@ -51,6 +54,9 @@ interface JoinOptions {
 }
 
 const LAST_WORDS = 3;
+const BOT_NAMES = ['阿比蓋爾', '約翰', '瑪莎', '蒂圖巴', '麗貝卡', '吉爾斯', '莎拉', '科頓', '喬治', '瑪麗', '湯瑪士', '威廉'];
+/** Bot thinking time (ms), so people can follow along */
+const BOT_DELAY = [700, 1600] as const;
 const LOG_LIMIT = 300;
 
 function makeCode(): string {
@@ -72,6 +78,8 @@ export class SalemRoom extends Room {
   private deadline: number | null = null;
   private timer: { clear(): void } | null = null;
   private lastWords = new Map<PlayerId, number>();
+  private botTimer: { clear(): void } | null = null;
+  private botSeq = 0;
 
   onCreate() {
     this.roomId = makeCode();
@@ -81,6 +89,8 @@ export class SalemRoom extends Room {
     this.onMessage('action', (client, action: Action) => this.handleAction(client, action));
     this.onMessage('chat', (client, msg: { text?: string }) => this.handleChat(client, msg?.text ?? ''));
     this.onMessage('backToLobby', (client) => this.handleBackToLobby(client));
+    this.onMessage('addBot', (client) => this.handleAddBot(client));
+    this.onMessage('removeBot', (client, msg: { id?: string }) => this.handleRemoveBot(client, msg?.id));
     // Sent by the client once its handlers are registered, to fetch the current snapshot
     this.onMessage('sync', (client) => this.sendSnapshot(client));
   }
@@ -144,6 +154,7 @@ export class SalemRoom extends Room {
 
   onDispose() {
     this.timer?.clear();
+    this.botTimer?.clear();
   }
 
   // ---------- Message handlers ----------
@@ -164,12 +175,35 @@ export class SalemRoom extends Room {
     this.afterStateChange();
   }
 
+  private handleAddBot(client: Client) {
+    if (this.sessions.get(client.sessionId) !== this.hostId) return this.sendError(client, '只有房主可以加入電腦玩家');
+    if (this.game) return this.sendError(client, '遊戲進行中，不能加入電腦玩家');
+    if (this.lobby.length >= MAX_PLAYERS) return this.sendError(client, '房間已滿');
+    const used = new Set(this.lobby.map((p) => p.name));
+    const name = BOT_NAMES.find((n) => !used.has(n)) ?? `電腦 ${this.botSeq + 1}`;
+    this.lobby.push({ id: `bot:${++this.botSeq}`, name, connected: true, bot: true });
+    this.pushLog({ kind: 'event', channel: 'system', text: `電腦玩家 ${name} 加入了房間` });
+    this.broadcastSnapshots();
+  }
+
+  private handleRemoveBot(client: Client, id: string | undefined) {
+    if (this.sessions.get(client.sessionId) !== this.hostId) return this.sendError(client, '只有房主可以移除電腦玩家');
+    if (this.game) return this.sendError(client, '遊戲進行中，不能移除電腦玩家');
+    const bot = this.lobby.find((p) => p.id === id && p.bot);
+    if (!bot) return;
+    this.lobby = this.lobby.filter((p) => p !== bot);
+    this.pushLog({ kind: 'event', channel: 'system', text: `電腦玩家 ${bot.name} 離開了房間` });
+    this.broadcastSnapshots();
+  }
+
   private handleBackToLobby(client: Client) {
     const pid = this.sessions.get(client.sessionId);
     if (pid !== this.hostId) return this.sendError(client, '只有房主可以回到大廳');
     if (!this.game || this.game.phase.kind !== 'game_over') return this.sendError(client, '遊戲尚未結束');
     this.game = null;
     this.clearTimer();
+    this.botTimer?.clear();
+    this.botTimer = null;
     // Remove players who disconnected
     this.lobby = this.lobby.filter((p) => p.connected);
     if (!this.lobby.some((p) => p.id === this.hostId)) this.hostId = this.lobby[0]?.id ?? null;
@@ -183,13 +217,14 @@ export class SalemRoom extends Room {
     this.dispatch(pid, action, client);
   }
 
-  private dispatch(actor: PlayerId | 'system', action: Action, client?: Client) {
-    if (!this.game) return;
+  /** Returns whether the action was accepted */
+  private dispatch(actor: PlayerId | 'system', action: Action, client?: Client): boolean {
+    if (!this.game) return false;
     const before = new Set(Object.values(this.game.players).filter((p) => !p.alive).map((p) => p.id));
     const r = reduce(this.game, { actor, action });
     if (!r.ok) {
       if (client) this.sendError(client, r.error);
-      return;
+      return false;
     }
     this.game = r.state;
     for (const e of r.events) this.pushLog({ kind: 'event', channel: 'public', text: e.text, to: e.visibleTo });
@@ -197,6 +232,7 @@ export class SalemRoom extends Room {
       if (!p.alive && !before.has(p.id)) this.lastWords.set(p.id, LAST_WORDS);
     }
     this.afterStateChange();
+    return true;
   }
 
   private handleChat(client: Client, raw: string) {
@@ -255,6 +291,30 @@ export class SalemRoom extends Room {
       }, secs * 1000);
     }
     this.broadcastSnapshots();
+    this.scheduleBots();
+  }
+
+  /**
+   * Find the first bot that needs to act and run its action after a short delay. After each state change this
+   * is called again, so bots act one at a time. If a bot keeps making invalid actions, stop after a few tries
+   * and let the phase timeout take over.
+   */
+  private scheduleBots(attempt = 0) {
+    this.botTimer?.clear();
+    this.botTimer = null;
+    const g = this.game;
+    if (!g || g.phase.kind === 'game_over') return;
+    for (const p of this.lobby) {
+      if (!p.bot) continue;
+      const action = botAction(projectFor(g, p.id));
+      if (!action) continue;
+      const delay = BOT_DELAY[0] + Math.random() * (BOT_DELAY[1] - BOT_DELAY[0]);
+      this.botTimer = this.clock.setTimeout(() => {
+        this.botTimer = null;
+        if (!this.dispatch(p.id, action) && attempt < 5) this.scheduleBots(attempt + 1);
+      }, delay);
+      return;
+    }
   }
 
   private clearTimer() {

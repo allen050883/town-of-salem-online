@@ -47,7 +47,8 @@ export const ACCUSATION_THRESHOLD = 7;
 
 /**
  * Card counts for the shuffled play deck (excludes the black cat, night and conspiracy, which are handled separately).
- * Totals 61 including those three, matching the Traditional Chinese edition.
+ * These total 58, but published component lists say 59 playing cards (plus the black cat, night and conspiracy),
+ * so one card is unaccounted for.
  * TODO: verify each count against a physical copy; only accusation 35 is confirmed by more than one source.
  */
 export const DECK_COUNTS: Partial<Record<CardType, number>> = {

@@ -35,7 +35,7 @@ Settings → Secrets and variables → Actions → New repository secret：
 在 NAS 既有的 tunnel 新增 **Public Hostname**：
 
 - Subdomain：`salem-api`，Domain：你的網域
-- Service：`HTTP`，URL：`http://localhost:25670`（cloudflared 以 `--network host` 執行；否則填 `http://<NAS 區網 IP>:25670`）。免費憑證只涵蓋單層子網域，所以用 `salem-api`，不要用 `api.salem`
+- Service：`HTTP`，URL：`http://<NAS 區網 IP>:25670`（例如 `http://192.168.0.42:25670`；請在路由器把 NAS 設成固定 IP）。不要填 `localhost`：這台 NAS 上 cloudflared 容器的 `--network host` 沒有生效，`localhost` 會連不到而回 502。免費憑證只涵蓋單層子網域，所以用 `salem-api`，不要用 `api.salem`
 
 ## 4. 部署與驗證
 

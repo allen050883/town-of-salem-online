@@ -27,7 +27,7 @@ services:
     ports:
       # Published on a real host port: the NAS's shared cloudflared tunnel reaches
       # every tunneled service by NAS address:PORT. Add a Public Hostname in that
-      # tunnel pointing at http://<NAS LAN IP>:25670 (no cloudflared service here).
+      # tunnel pointing at http://<NAS LAN IP>:25670 (not localhost: host networking did not work for cloudflared here).
       - '25670:2567'
     # Keep memory small so other NAS services aren't affected (no cpus: the NAS kernel lacks CFS support)
     mem_limit: 256m

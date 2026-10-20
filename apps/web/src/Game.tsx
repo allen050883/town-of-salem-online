@@ -1,14 +1,37 @@
 import { useEffect, useRef, useState } from 'react';
-import { ACCUSATION_THRESHOLD, CARD_COLOR, CARD_NAME, type Action, type Card, type PlayerId, type PlayerView, type PublicPlayer } from '@salem/engine';
-import type { ClientSnapshot } from './net';
+import { CARD_COLOR, CARD_NAME, PARRIS_MAX, ROLES, SALVAGE_MAX, type Action, type Card, type PlayerId, type PlayerView } from '@salem/engine';
+import type { ClientSnapshot, Connection, Send } from './net';
 import { LogPanel } from './LogPanel';
-import { Avatar } from './Avatar';
-import { CARD_DESC, TRYAL_FULL, TRYAL_LABEL } from './text';
+import { CardList, PlayerRow, RoleChip, isDark, phaseText } from './Table';
 import { CARD_W, CardFace } from './CardFace';
+import { CARD_DESC } from './text';
+import type { Voice } from './voice';
+import { VoiceControls } from './VoiceControls';
+
+interface Props {
+  snap: ClientSnapshot;
+  view: PlayerView;
+  act: (a: Action) => void;
+  send: Send;
+  error: string | null;
+  connection: Connection;
+  voice: Voice;
+  onLeave: () => void;
+}
+
+interface Selection {
+  card: Card | null;
+  first: PlayerId | null;
+  /** Will Griggs: play the selected Alibi as a Witness */
+  asWitness: boolean;
+}
+
+const NONE: Selection = { card: null, first: null, asWitness: false };
 
 /** Hand card scale: half size on desktop, smaller on phones */
 const HAND_SCALE = 0.5;
 const HAND_SCALE_NARROW = 0.4;
+const HAND_GAP = 8;
 
 function useHandScale() {
   const query = '(max-width: 760px)';
@@ -22,19 +45,6 @@ function useHandScale() {
   return narrow ? HAND_SCALE_NARROW : HAND_SCALE;
 }
 
-const HAND_GAP = 8;
-
-/** The next living player in seat order (clockwise), matching the engine's nextAlive: the player on your left */
-function leftOf(view: PlayerView): PlayerId | null {
-  const n = view.seats.length;
-  const start = view.seats.indexOf(view.me);
-  for (let i = 1; i < n; i++) {
-    const id = view.seats[(start + i) % n]!;
-    if (view.players[id]!.alive) return id;
-  }
-  return null;
-}
-
 /** When the hand doesn't fit on one row, compute how much each card should overlap the previous one (negative px); 0 when it fits */
 function useHandOverlap(count: number, cardWidth: number) {
   const ref = useRef<HTMLDivElement>(null);
@@ -45,56 +55,63 @@ function useHandOverlap(count: number, cardWidth: number) {
     const ro = new ResizeObserver(() => setWidth(el.clientWidth));
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [count > 0]);
   if (count < 2 || width === 0) return { ref, overlap: 0 };
   const need = count * cardWidth + (count - 1) * HAND_GAP;
   if (need <= width) return { ref, overlap: 0 };
-  // Overlap at most down to 30% of the card width still showing, so the card name stays visible
-  const step = Math.max((width - cardWidth) / (count - 1), cardWidth * 0.3);
+  // Overlap at most 30% of a card, so the (centered) card name stays readable; beyond that the hand scrolls sideways
+  const step = Math.max((width - cardWidth) / (count - 1), cardWidth * 0.7);
   return { ref, overlap: step - cardWidth - HAND_GAP };
 }
 
-interface Props {
-  snap: ClientSnapshot;
-  view: PlayerView;
-  act: (a: Action) => void;
-  send: (type: 'start' | 'backToLobby' | 'chat', payload?: { text: string }) => void;
-  error: string | null;
-  onLeave: () => void;
+/** The next living player in seat order (clockwise), matching the engine's nextAlive: the player on your left */
+function leftOf(view: PlayerView): PlayerId | null {
+  const n = view.seats.length;
+  const start = view.seats.indexOf(view.me);
+  if (start < 0) return null;
+  for (let i = 1; i < n; i++) {
+    const id = view.seats[(start + i) % n]!;
+    if (view.players[id]!.alive) return id;
+  }
+  return null;
 }
 
-interface Selection {
-  card: Card | null;
-  first: PlayerId | null;
-}
-
-const NONE: Selection = { card: null, first: null };
-
-export function Game({ snap, view, act, send, error, onLeave }: Props) {
+export function Game({ snap, view, act, send, error, connection, voice, onLeave }: Props) {
   const [sel, setSel] = useState<Selection>(NONE);
+  const [panel, setPanel] = useState<'none' | 'discard' | 'parris'>('none');
+  const [logOpen, setLogOpen] = useState(false);
   const handScale = useHandScale();
   const hand = useHandOverlap(view.myHand.length, CARD_W * handScale);
   const ph = view.phase;
-  const me = view.players[view.me]!;
+  const me = view.players[view.me];
+  const spectator = view.spectator || !me;
+  const alive = !!me?.alive;
   // Conspiracy: everyone takes a card from the player on their left, so label that player (from the reveal step on)
   const left = leftOf(view);
-  const showLeft = me.alive && (ph.kind === 'conspiracy' || (ph.kind === 'reveal' && ph.then === 'conspiracy_pass'));
-  const myTurn = ph.kind === 'turn' && view.turn.player === view.me && me.alive;
-  const dark = ph.kind === 'dawn' || (ph.kind === 'night' && ph.step !== 'confess');
+  const showLeft = alive && (ph.kind === 'conspiracy' || (ph.kind === 'reveal' && ph.then === 'conspiracy_pass'));
+  const myTurn = ph.kind === 'turn' && view.turn.player === view.me && alive;
+  const myRole = me ? me.effectiveRole : null;
 
   // Clear the selection when the phase or turn changes
-  useEffect(() => setSel(NONE), [ph.kind, view.turn.player]);
+  useEffect(() => {
+    setSel(NONE);
+    setPanel((p) => (p === 'parris' ? 'none' : p));
+  }, [ph.kind, view.turn.player]);
 
   // Drop the selection if the selected card is gone (already played)
   useEffect(() => {
     if (sel.card && !view.myHand.some((c) => c.id === sel.card!.id)) setSel(NONE);
   }, [view.myHand, sel.card]);
 
-  const alive = (id: PlayerId) => view.players[id]!.alive;
+  const isAlive = (id: PlayerId) => view.players[id]!.alive;
+  const offline = new Set(snap.lobby.filter((p) => !p.connected).map((p) => p.id));
+  const voiceOn = new Set(snap.voice);
+  const bots = new Set(snap.lobby.filter((p) => p.bot).map((p) => p.id));
+  const pictures = new Map(snap.lobby.map((p) => [p.id, p.picture]));
 
   // ----- Which players / cards can be clicked right now -----
   function canTargetPlayer(id: PlayerId): boolean {
-    if (!alive(id) || !me.alive) return false;
+    if (!isAlive(id) || !alive) return false;
     if (ph.kind === 'dawn') return ph.mustAct;
     if (ph.kind === 'night') {
       if (!ph.mustAct) return false;
@@ -111,7 +128,7 @@ export function Game({ snap, view, act, send, error, onLeave }: Props) {
   }
 
   function canPickTryal(owner: PlayerId): boolean {
-    if (!me.alive) return false;
+    if (!alive) return false;
     if (ph.kind === 'reveal') return ph.chooser === view.me && owner === ph.target;
     if (ph.kind === 'conspiracy') return ph.mustPick && owner === ph.leftOf;
     if (ph.kind === 'night') return ph.step === 'confess' && ph.mustAct && owner === view.me;
@@ -130,12 +147,13 @@ export function Game({ snap, view, act, send, error, onLeave }: Props) {
       return act(ph.step === 'witches' ? { type: 'WITCH_VOTE', target: id } : { type: 'CONSTABLE_GAVEL', target: id });
     }
     const card = sel.card!;
-    if (card.type === 'robbery' || card.type === 'scapegoat') {
-      if (!sel.first) return setSel({ card, first: id });
+    const extra = sel.asWitness ? { asWitness: true } : {};
+    if (!sel.asWitness && (card.type === 'robbery' || card.type === 'scapegoat')) {
+      if (!sel.first) return setSel({ ...sel, first: id });
       act({ type: 'PLAY_CARD', cardId: card.id, target: sel.first, secondTarget: id });
       return setSel(NONE);
     }
-    act({ type: 'PLAY_CARD', cardId: card.id, target: id });
+    act({ type: 'PLAY_CARD', cardId: card.id, target: id, ...extra });
     setSel(NONE);
   }
 
@@ -152,8 +170,10 @@ export function Game({ snap, view, act, send, error, onLeave }: Props) {
     setSel(NONE);
   }
 
+  const canTriggerAbility = myTurn && view.turn.mode === 'idle';
+
   return (
-    <div className={`game ${dark ? 'is-night' : ''}`}>
+    <div className={`game ${isDark(view) ? 'is-night' : ''}`}>
       <header className="bar">
         <h1 className="title small">
           獵巫鎮<span className="year">1692</span>
@@ -162,31 +182,57 @@ export function Game({ snap, view, act, send, error, onLeave }: Props) {
           {snap.roomCode}
         </span>
         <span className="deck-chip">牌堆 {view.deckCount}</span>
+        <button className="ghost small" onClick={() => setPanel(panel === 'discard' ? 'none' : 'discard')} aria-expanded={panel === 'discard'}>
+          棄牌 {view.discardCount}
+        </button>
+        <VoiceControls voice={voice} />
         <Countdown deadline={snap.deadline} />
         <button className="ghost small" onClick={onLeave}>
           離開
         </button>
       </header>
 
-      <Prompt view={view} sel={sel} myTurn={myTurn} />
+      {connection !== 'online' && (
+        <p className="banner" role="alert">
+          {connection === 'reconnecting' ? '連線中斷，正在重新連線…' : '已離線'}
+        </p>
+      )}
 
-      <div className="board">
+      <Prompt view={view} sel={sel} myTurn={myTurn} spectator={spectator} />
+
+      {panel === 'discard' && (
+        <section className="panel" aria-label="棄牌堆">
+          <h2>棄牌堆（正面朝上，所有人都看得到）</h2>
+          <CardList cards={view.discard} />
+        </section>
+      )}
+
+      {ph.kind === 'roles' && !spectator && <RolePicker view={view} act={act} />}
+      {ph.kind === 'arrange' && ph.deck && <Arranger key={ph.deck.map((c) => c.id).join()} deck={ph.deck} act={act} />}
+      {ph.kind === 'salvage' && ph.cards && <Salvager cards={ph.cards} from={view.players[ph.from]!.name} act={act} />}
+      {panel === 'parris' && canTriggerAbility && (
+        <ParrisPicker discard={view.discard} act={act} onCancel={() => setPanel('none')} />
+      )}
+
+      <div className={`board ${logOpen ? 'show-log' : ''}`}>
         <section className="town" aria-label="鎮民">
           {view.seats.map((id) => (
             <PlayerRow
               key={id}
               p={view.players[id]!}
-              picture={snap.lobby.find((l) => l.id === id)?.picture}
-              bot={!!snap.lobby.find((l) => l.id === id)?.bot}
               view={view}
               targetable={canTargetPlayer(id)}
               selectedFirst={sel.first === id}
-              isLeft={showLeft && id === left}
               tryalPickable={canPickTryal(id)}
               frontPickable={(c) => canPickFront(id, c)}
               onPlayer={() => onPlayer(id)}
               onTryal={(t) => onTryal(id, t)}
               onFront={(c) => onFront(id, c)}
+              offline={offline.has(id)}
+              voice={voiceOn.has(id)}
+              bot={bots.has(id)}
+              picture={pictures.get(id)}
+              isLeft={showLeft && id === left}
             />
           ))}
         </section>
@@ -194,9 +240,14 @@ export function Game({ snap, view, act, send, error, onLeave }: Props) {
       </div>
 
       <footer className="hand-bar">
+        <button className="ghost small log-toggle" onClick={() => setLogOpen(!logOpen)} aria-expanded={logOpen}>
+          {logOpen ? '看牌桌' : `紀錄與聊天`}
+        </button>
         {error && <p className="error">{error}</p>}
         {ph.kind === 'game_over' ? (
-          <GameOver view={view} isHost={snap.hostId === view.me} onBack={() => send('backToLobby')} />
+          <GameOver view={view} snap={snap} isHost={snap.hostId === view.me} onBack={() => send('backToLobby')} />
+        ) : spectator ? (
+          <p className="muted">你正在觀戰。遊戲結束後可以在大廳入座。</p>
         ) : (
           <>
             <div className="hand" role="list" aria-label="你的手牌" ref={hand.ref} style={{ ['--overlap' as string]: `${hand.overlap}px` }}>
@@ -207,7 +258,7 @@ export function Game({ snap, view, act, send, error, onLeave }: Props) {
                   role="listitem"
                   className={`hand-card ${sel.card?.id === c.id ? 'is-selected' : ''}`}
                   disabled={!myTurn || view.turn.mode === 'drawing'}
-                  onClick={() => setSel(sel.card?.id === c.id ? NONE : { card: c, first: null })}
+                  onClick={() => setSel(sel.card?.id === c.id ? NONE : { card: c, first: null, asWitness: false })}
                   title={`${CARD_NAME[c.type]}：${CARD_DESC[c.type]}`}
                   aria-label={`${CARD_NAME[c.type]}：${CARD_DESC[c.type]}`}
                 >
@@ -216,20 +267,40 @@ export function Game({ snap, view, act, send, error, onLeave }: Props) {
               ))}
             </div>
             <div className="turn-actions">
-              {myTurn && view.turn.mode === 'idle' && (
+              {sel.card?.type === 'alibi' && myRole === 'griggs' && (
+                <button className={sel.asWitness ? 'primary' : ''} onClick={() => setSel({ ...sel, first: null, asWitness: !sel.asWitness })} aria-pressed={sel.asWitness}>
+                  當作目擊（7 點）
+                </button>
+              )}
+              {canTriggerAbility && (
                 <button className="primary" onClick={() => act({ type: 'DRAW' })}>
                   抽兩張牌
                 </button>
               )}
+              {canTriggerAbility && view.myAbilities.parris && (
+                <button onClick={() => setPanel('parris')}>從棄牌堆拿牌（剩 {view.myAbilities.parris} 次）</button>
+              )}
+              {canTriggerAbility && view.myAbilities.tituba && <button onClick={() => act({ type: 'ARRANGE_START' })}>查看並重排牌堆</button>}
               {myTurn && view.turn.mode === 'playing' && (
                 <button className="primary" onClick={() => act({ type: 'END_TURN' })}>
                   結束回合
                 </button>
               )}
               {ph.kind === 'night' && ph.step === 'confess' && ph.mustAct && (
-                <button className="primary" onClick={() => act({ type: 'NIGHT_PASS' })}>
-                  不自首
-                </button>
+                <>
+                  {view.myAbilities.phips && (
+                    <button
+                      onClick={() => {
+                        if (window.confirm('使用 William Phips 的能力：自首但不翻牌（全場一次）？')) act({ type: 'CONFESS' });
+                      }}
+                    >
+                      自首（不翻牌）
+                    </button>
+                  )}
+                  <button className="primary" onClick={() => act({ type: 'NIGHT_PASS' })}>
+                    不自首
+                  </button>
+                </>
               )}
               {sel.card && (
                 <button className="ghost" onClick={() => setSel(NONE)}>
@@ -250,109 +321,26 @@ export function Game({ snap, view, act, send, error, onLeave }: Props) {
   );
 }
 
-function PlayerRow(props: {
-  p: PublicPlayer;
-  picture?: string;
-  bot: boolean;
-  /** During a conspiracy: this is the player on the viewer's left */
-  isLeft: boolean;
-  view: PlayerView;
-  targetable: boolean;
-  selectedFirst: boolean;
-  tryalPickable: boolean;
-  frontPickable: (c: Card) => boolean;
-  onPlayer: () => void;
-  onTryal: (id: string) => void;
-  onFront: (c: Card) => void;
-}) {
-  const { p, view, targetable } = props;
-  const isTurn = view.phase.kind === 'turn' && view.turn.player === p.id;
-  const isMe = p.id === view.me;
-  const filled = Math.min(p.accusations, ACCUSATION_THRESHOLD);
-
-  return (
-    <article
-      className={[
-        'pew',
-        !p.alive && 'is-dead',
-        isTurn && 'is-turn',
-        isMe && 'is-me',
-        targetable && 'is-targetable',
-        props.selectedFirst && 'is-first',
-        props.isLeft && 'is-left',
-      ]
-        .filter(Boolean)
-        .join(' ')}
-    >
-      <button className="pew-name" onClick={props.onPlayer} disabled={!targetable} aria-label={`選擇 ${p.name}`}>
-        <Avatar name={p.name} picture={props.picture} size={28} />
-        <span className="name">{p.name}</span>
-        {isMe && <span className="tag">你</span>}
-        {props.bot && <span className="tag">電腦</span>}
-        {props.isLeft && <span className="tag left">你的左手邊</span>}
-        {p.isWitch && p.alive && !isMe && <span className="tag witch">女巫同伴</span>}
-        {!p.alive && <span className="tag">{p.isWitch ? '已死・女巫' : '已死'}</span>}
-        <span className="hand-count" title="手牌數">
-          手牌 {p.handCount}
-        </span>
-      </button>
-
-      <div className="tryals" aria-label="審判牌">
-        {p.tryals.map((t) => (
-          <button
-            key={t.id}
-            className={`tryal ${t.revealed ? 'is-revealed' : ''} ${t.kind ? `k-${t.kind}` : 'k-hidden'} ${props.tryalPickable && !t.revealed ? 'is-pickable' : ''}`}
-            disabled={!props.tryalPickable || t.revealed}
-            onClick={() => props.onTryal(t.id)}
-            title={t.kind ? `${TRYAL_FULL[t.kind]}${t.revealed ? '（已翻開）' : '（只有你看得到）'}` : '未翻開的審判牌'}
-          >
-            {t.kind ? TRYAL_LABEL[t.kind] : ''}
-          </button>
-        ))}
-      </div>
-
-      <div className="accuse" title={`指控 ${p.accusations} / ${ACCUSATION_THRESHOLD}`} aria-label={`指控 ${p.accusations} 點`}>
-        {Array.from({ length: ACCUSATION_THRESHOLD }, (_, i) => (
-          <span key={i} className={i < filled ? 'pip on' : 'pip'} />
-        ))}
-      </div>
-
-      {p.front.length > 0 && (
-        <div className="front">
-          {p.front
-            .filter((c) => CARD_COLOR[c.type] !== 'red')
-            .map((c) => (
-              <button
-                key={c.id}
-                className={`chip c-${CARD_COLOR[c.type]} ${props.frontPickable(c) ? 'is-pickable' : ''}`}
-                disabled={!props.frontPickable(c)}
-                onClick={() => props.onFront(c)}
-                title={CARD_DESC[c.type]}
-              >
-                {CARD_NAME[c.type]}
-              </button>
-            ))}
-        </div>
-      )}
-    </article>
-  );
-}
-
-function Prompt({ view, sel, myTurn }: { view: PlayerView; sel: Selection; myTurn: boolean }) {
+function Prompt({ view, sel, myTurn, spectator }: { view: PlayerView; sel: Selection; myTurn: boolean; spectator: boolean }) {
   const ph = view.phase;
   const name = (id: PlayerId) => view.players[id]?.name ?? '?';
-  const me = view.players[view.me]!;
+  const me = view.players[view.me];
   let text: string;
 
-  if (!me.alive && ph.kind !== 'game_over') text = '你已經死亡，可以繼續觀戰。';
+  if (spectator) text = `觀戰中。${phaseText(view)}`;
+  else if (!me!.alive && ph.kind !== 'game_over') text = '你已經死亡，可以繼續觀戰。';
   else
     switch (ph.kind) {
+      case 'roles':
+        text = ph.picked ? `你選了 ${ROLES[ph.picked].name}。${phaseText(view)}` : '選一位鎮公所角色。角色會公開給所有人。';
+        break;
       case 'dawn':
         text = ph.mustAct ? '黎明。你是女巫：點一位玩家，把黑貓放到他面前（可以是你自己）。' : '黎明。所有人閉上眼睛，女巫正在放黑貓…';
         break;
       case 'turn':
         if (!myTurn) text = `輪到 ${name(view.turn.player)}。`;
-        else if (sel.card?.type === 'curse') text = `詛咒：點一張別人面前的藍牌把它棄掉。`;
+        else if (sel.asWitness) text = '辯護當作目擊（7 點）：點一位玩家的名字。';
+        else if (sel.card?.type === 'curse') text = '詛咒：點一張別人面前的藍牌把它棄掉。';
         else if (sel.card && (sel.card.type === 'robbery' || sel.card.type === 'scapegoat'))
           text = sel.first ? `${CARD_NAME[sel.card.type]}：要轉給誰？` : `${CARD_NAME[sel.card.type]}：先點要拿走誰的牌。`;
         else if (sel.card) text = `${CARD_NAME[sel.card.type]}：點一位玩家的名字。${CARD_DESC[sel.card.type]}`;
@@ -361,37 +349,40 @@ function Prompt({ view, sel, myTurn }: { view: PlayerView; sel: Selection; myTur
         break;
       case 'reveal':
         if (ph.then === 'conspiracy_pass')
-          text =
-            ph.chooser === view.me
-              ? '傳染！黑貓在你面前：點你自己的一張審判牌翻開。'
-              : `傳染！黑貓在 ${name(ph.target)} 面前，他正在選一張自己的審判牌翻開…`;
-        else
-          text =
-            ph.chooser === view.me
-              ? `審判 ${name(ph.target)}：點他的一張審判牌翻開。`
-              : `${name(ph.chooser)} 正在翻開 ${name(ph.target)} 的一張審判牌…`;
+          text = ph.chooser === view.me ? '傳染！黑貓在你面前：點你自己的一張審判牌翻開。' : phaseText(view);
+        else text = ph.chooser === view.me ? `審判 ${name(ph.target)}：點他的一張審判牌翻開。` : phaseText(view);
+        break;
+      case 'arrange':
+        text = ph.deck ? '你查看了牌堆：用上下按鈕排好順序（最上面先抽），完成後會抽兩張牌。' : phaseText(view);
+        break;
+      case 'salvage':
+        text = ph.cards ? `John Proctor：從 ${name(ph.from)} 留下的手牌中挑最多 ${SALVAGE_MAX} 張收下。` : phaseText(view);
         break;
       case 'night':
         if (ph.step === 'witches')
-          text = ph.mustAct ? '夜晚。你是女巫：點一位玩家，決定今晚要殺誰。' : view.amWitch ? `女巫正在投票（目前目標：${ph.victim ? name(ph.victim) : '未定'}）` : '夜晚。所有人閉上眼睛…';
+          text = ph.mustAct ? '夜晚。你是女巫：點一位玩家，決定今晚要殺誰。' : phaseText(view);
         else if (ph.step === 'constable') text = ph.mustAct ? '你是警長：點一位玩家，把法槌交給他保護他（不能選自己）。' : '夜晚。警長正在行動…';
         else text = ph.mustAct ? '天亮前：要自首嗎？點你自己的一張審判牌翻開，換取今晚免死；或按「不自首」。' : '等待其他人決定是否自首…';
         break;
       case 'conspiracy':
-        text = ph.mustPick ? `傳染！點 ${name(ph.leftOf)}（你左手邊）的一張審判牌拿走。` : ph.picked ? '等待其他人拿牌…' : '傳染進行中…';
+        text = ph.mustPick ? `傳染！點 ${name(ph.leftOf)}（你左手邊）的一張審判牌拿走。` : ph.picked ? '等待其他人拿牌…' : phaseText(view);
         break;
       case 'game_over':
-        text = ph.winner === 'town' ? '鎮民獲勝。所有女巫都被揪出來了。' : '女巫獲勝。塞勒姆已經被黑暗吞沒。';
+        text = phaseText(view);
         break;
     }
 
   const urgent =
-    (ph.kind === 'dawn' && ph.mustAct) ||
-    (ph.kind === 'night' && ph.mustAct) ||
-    (ph.kind === 'reveal' && ph.chooser === view.me) ||
-    (ph.kind === 'conspiracy' && ph.mustPick) ||
-    myTurn;
-
+    !spectator &&
+    ((ph.kind === 'roles' && !ph.picked) ||
+      (ph.kind === 'dawn' && ph.mustAct) ||
+      (ph.kind === 'night' && ph.mustAct) ||
+      (ph.kind === 'reveal' && ph.chooser === view.me) ||
+      (ph.kind === 'conspiracy' && ph.mustPick) ||
+      (ph.kind === 'arrange' && !!ph.deck) ||
+      (ph.kind === 'salvage' && !!ph.cards) ||
+      myTurn);
+  const showRoles = !spectator && me?.alive && ph.kind !== 'game_over';
   // When a black card fires, show its illustrated card beside the prompt
   const event = ph.kind === 'night' ? 'night' : ph.kind === 'conspiracy' || (ph.kind === 'reveal' && ph.then === 'conspiracy_pass') ? 'conspiracy' : null;
 
@@ -402,18 +393,124 @@ function Prompt({ view, sel, myTurn }: { view: PlayerView; sel: Selection; myTur
           <CardFace kind={event} scale={0.3} compact />
         </span>
       )}
-      {view.amWitch && me.alive && ph.kind !== 'game_over' && <span className="role-badge witch">女巫</span>}
-      {view.amConstable && me.alive && ph.kind !== 'game_over' && <span className="role-badge">警長</span>}
-      {text}
+      {showRoles && view.amWitch && <span className="role-badge witch">女巫</span>}
+      {showRoles && view.amConstable && <span className="role-badge">警長</span>}
+      {showRoles && me?.role && <RoleChip role={me.role} copying={me.effectiveRole} mine />}
+      <span>{text}</span>
     </p>
   );
 }
 
-function GameOver({ view, isHost, onBack }: { view: PlayerView; isHost: boolean; onBack: () => void }) {
+function RolePicker({ view, act }: { view: PlayerView; act: (a: Action) => void }) {
+  const ph = view.phase;
+  if (ph.kind !== 'roles' || ph.picked) return null;
+  return (
+    <section className="panel" aria-label="選擇角色">
+      <h2>選一位角色</h2>
+      <div className="role-offers">
+        {ph.offers.map((r) => (
+          <button key={r} className="role-card" onClick={() => act({ type: 'PICK_ROLE', role: r })}>
+            <b>{ROLES[r].name}</b>
+            <span className="muted">{ROLES[r].title}</span>
+            <span>{ROLES[r].desc}</span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/** Tituba: reorder the deck with up/down buttons (works the same with a mouse, a finger or a keyboard) */
+function Arranger({ deck, act }: { deck: Card[]; act: (a: Action) => void }) {
+  const [order, setOrder] = useState(deck);
+  const move = (i: number, d: number) => {
+    const j = i + d;
+    if (j < 0 || j >= order.length) return;
+    const next = [...order];
+    [next[i], next[j]] = [next[j]!, next[i]!];
+    setOrder(next);
+  };
+  return (
+    <section className="panel" aria-label="重排牌堆">
+      <h2>重排牌堆（最上面先抽；夜晚固定在最底）</h2>
+      <ol className="arrange">
+        {order.map((c, i) => (
+          <li key={c.id}>
+            <span className={`chip c-${CARD_COLOR[c.type]}`}>{CARD_NAME[c.type]}</span>
+            <button className="small" onClick={() => move(i, -1)} disabled={i === 0} aria-label={`把第 ${i + 1} 張往上移`}>
+              ↑
+            </button>
+            <button className="small" onClick={() => move(i, 1)} disabled={i === order.length - 1} aria-label={`把第 ${i + 1} 張往下移`}>
+              ↓
+            </button>
+          </li>
+        ))}
+      </ol>
+      <button className="primary" onClick={() => act({ type: 'ARRANGE_DECK', order: order.map((c) => c.id) })}>
+        完成並抽兩張牌
+      </button>
+    </section>
+  );
+}
+
+function Salvager({ cards, from, act }: { cards: Card[]; from: string; act: (a: Action) => void }) {
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const toggle = (c: Card) => {
+    const next = new Set(picked);
+    if (next.has(c.id)) next.delete(c.id);
+    else if (next.size < SALVAGE_MAX) next.add(c.id);
+    setPicked(next);
+  };
+  return (
+    <section className="panel" aria-label="挑選遺物">
+      <h2>
+        {from} 留下的手牌（已選 {picked.size} / {SALVAGE_MAX}）
+      </h2>
+      <CardList cards={cards} picked={picked} onToggle={toggle} />
+      <button className="primary" onClick={() => act({ type: 'SALVAGE', cardIds: [...picked] })}>
+        收下選好的牌，其餘丟棄
+      </button>
+    </section>
+  );
+}
+
+function ParrisPicker({ discard, act, onCancel }: { discard: Card[]; act: (a: Action) => void; onCancel: () => void }) {
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const usable = discard.filter((c) => CARD_COLOR[c.type] !== 'black');
+  const toggle = (c: Card) => {
+    const next = new Set(picked);
+    if (next.has(c.id)) next.delete(c.id);
+    else if (next.size < PARRIS_MAX) next.add(c.id);
+    setPicked(next);
+  };
+  return (
+    <section className="panel" aria-label="從棄牌堆拿牌">
+      <h2>
+        Samuel Parris：從棄牌堆選最多 {PARRIS_MAX} 張（取代這回合抽牌）
+      </h2>
+      <CardList cards={usable} picked={picked} onToggle={toggle} />
+      <div className="turn-actions">
+        <button className="primary" disabled={picked.size === 0} onClick={() => act({ type: 'DRAW_DISCARD', cardIds: [...picked] })}>
+          拿走這些牌
+        </button>
+        <button className="ghost" onClick={onCancel}>
+          取消
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function GameOver({ view, snap, isHost, onBack }: { view: PlayerView; snap: ClientSnapshot; isHost: boolean; onBack: () => void }) {
   const witches = view.seats.filter((id) => view.players[id]!.isWitch).map((id) => view.players[id]!.name);
   return (
     <div className="game-over">
       <p>女巫是：{witches.join('、') || '（無）'}</p>
+      {snap.lastReplayId && (
+        <a className="button-link" href={`?replay=${snap.lastReplayId}`} target="_blank" rel="noreferrer">
+          觀看重播
+        </a>
+      )}
       {isHost ? (
         <button className="primary" onClick={onBack}>
           回到大廳再玩一場
@@ -425,7 +522,7 @@ function GameOver({ view, isHost, onBack }: { view: PlayerView; isHost: boolean;
   );
 }
 
-function Countdown({ deadline }: { deadline: number | null }) {
+export function Countdown({ deadline }: { deadline: number | null }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 500);

@@ -215,8 +215,10 @@ button.small {
 }
 
 /* ---------- Game layout ---------- */
+/* App-style layout: header, prompt and hand stay put; the table and the log scroll on their own */
 .game {
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   background: var(--bg);
@@ -286,16 +288,19 @@ button.small {
   flex: 1;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
 }
 
 /* ---------- Player rows (pews) ---------- */
 .town {
   padding: 0.5rem 16px 1rem;
+  overflow-y: auto;
+  min-height: 0;
 }
 .pew {
   display: grid;
-  grid-template-columns: minmax(8rem, 13rem) auto 1fr;
+  grid-template-columns: minmax(9rem, 15rem) auto 1fr;
   grid-template-areas:
     'name tryals accuse'
     'name front front';
@@ -319,16 +324,22 @@ button.small {
   background: color-mix(in srgb, var(--wax) 28%, transparent);
 }
 
-.pew-name {
+.pew-head {
   grid-area: name;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.3rem 0.4rem;
+  min-width: 0;
+}
+.pew-tags {
+  display: contents;
+}
+.pew-name {
   text-align: left;
   border: none;
   background: none;
-  padding: 0.25rem;
+  padding: 0.25rem 0.25rem 0.25rem 0;
 }
 .pew.is-targetable .pew-name .name {
   text-decoration: underline;
@@ -412,6 +423,7 @@ button.small {
 .accuse {
   grid-area: accuse;
   display: flex;
+  align-items: center;
   gap: 0.3rem;
 }
 .pip {
@@ -430,6 +442,12 @@ button.small {
 .is-night .pip.on {
   background: #c24a5b;
   border-color: #c24a5b;
+}
+.accuse-num {
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  margin-left: 0.25rem;
 }
 
 .front {
@@ -471,9 +489,6 @@ button.small {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  max-height: calc(100vh - 9rem);
-  position: sticky;
-  top: 0;
 }
 .lobby .log {
   border: 1px solid var(--rule);
@@ -524,8 +539,6 @@ button.small {
 
 /* ---------- Hand ---------- */
 .hand-bar {
-  position: sticky;
-  bottom: 0;
   background: var(--panel);
   border-top: 1px solid var(--rule);
   padding: 0.75rem 16px;
@@ -577,28 +590,343 @@ button.small {
   font: 600 1.1rem var(--serif);
 }
 
+/* ---------- Characters ---------- */
+.role-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.role-chip {
+  font: 600 0.8rem var(--serif);
+  padding: 0.05rem 0.45rem;
+  border: 1px solid var(--indigo);
+  color: var(--indigo);
+  background: transparent;
+  border-radius: 3px;
+}
+.is-night .role-chip {
+  border-color: var(--muted);
+  color: var(--ink);
+}
+.role-chip.is-mine {
+  background: var(--indigo);
+  border-color: var(--indigo);
+  color: var(--on-color);
+}
+.role-chip .copying {
+  margin-left: 0.3rem;
+  font-weight: 400;
+  opacity: 0.85;
+}
+.role-pop {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 4px);
+  left: 0;
+  width: min(18rem, 80vw);
+  padding: 0.5rem 0.65rem;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.15);
+  font-size: 0.85rem;
+  font-weight: 400;
+  line-height: 1.5;
+}
+.role-pop b {
+  display: block;
+  font-family: var(--serif);
+}
+.role-offers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.role-card {
+  display: grid;
+  gap: 0.25rem;
+  text-align: left;
+  max-width: 20rem;
+  padding: 0.75rem 1rem;
+  border: 1.5px solid var(--indigo);
+}
+.role-card b {
+  font: 700 1.1rem var(--serif);
+}
+.role-card:hover {
+  background: color-mix(in srgb, var(--wax) 14%, var(--panel));
+}
+
+/* ---------- Status ---------- */
+.tag.offline {
+  border-color: var(--oxblood);
+  color: var(--oxblood);
+}
+.is-night .tag.offline {
+  border-color: #e98b96;
+  color: #e98b96;
+}
+.tag.thinking {
+  border-color: var(--wax);
+  color: var(--ink);
+}
+.banner {
+  margin: 0;
+  padding: 0.5rem 16px;
+  background: var(--wax);
+  color: #1d2633;
+  font-weight: 700;
+}
+.loading {
+  padding: 4rem 16px;
+  text-align: center;
+}
+.small-text {
+  font-size: 0.8rem;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ---------- Panels (pick a character, arrange the deck, salvage, discard pile) ---------- */
+.panel {
+  padding: 0.75rem 16px 1rem;
+  border-bottom: 1px solid var(--rule);
+  background: color-mix(in srgb, var(--wax) 8%, var(--bg));
+  display: grid;
+  gap: 0.6rem;
+  justify-items: start;
+  flex: none;
+  max-height: 50%;
+  overflow-y: auto;
+}
+.panel h2 {
+  margin: 0;
+  font: 600 1rem var(--serif);
+}
+.arrange {
+  margin: 0;
+  padding-left: 1.75rem;
+  display: grid;
+  gap: 0.3rem;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.arrange li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.arrange .chip {
+  min-width: 4rem;
+  text-align: center;
+}
+
+/* ---------- Lobby options, links ---------- */
+.options {
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 0.5rem 0.9rem 0.75rem;
+  margin: 0 0 1rem;
+  display: grid;
+  gap: 0.35rem;
+}
+.options legend {
+  font: 600 0.95rem var(--serif);
+  padding: 0 0.3rem;
+}
+.entry-form label.check,
+.check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--ink);
+}
+.check input {
+  width: 1.1rem;
+  height: 1.1rem;
+  flex: none;
+}
+.button-link {
+  display: inline-block;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--ink);
+  text-decoration: none;
+  cursor: pointer;
+}
+.button-link.small {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.875rem;
+}
+.button-link:focus-within {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.voice {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+/* ---------- Replays ---------- */
+.replays {
+  margin-top: 3rem;
+  display: grid;
+  gap: 0.6rem;
+}
+.replays h2 {
+  margin: 0;
+  font: 600 1.15rem var(--serif);
+}
+.replay-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.replay-list li {
+  display: grid;
+  border-bottom: 1px solid var(--rule);
+  padding: 0.25rem 0;
+}
+.replay-list button {
+  text-align: left;
+  padding: 0.25rem 0;
+}
+.perspective {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.875rem;
+}
+.perspective select {
+  font: inherit;
+  padding: 0.2rem 0.4rem;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+}
+.replay-controls {
+  flex-wrap: nowrap;
+}
+.scrubber {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--wax);
+}
+
+/* The log toggle only exists on narrow screens */
+.log-toggle {
+  display: none;
+}
+
 /* ---------- Mobile ---------- */
 @media (max-width: 760px) {
   .bar {
-    gap: 0.5rem;
+    gap: 0.4rem;
+    padding: 0.4rem 12px;
+  }
+  /* The room code already identifies the page; give the controls the width */
+  .bar .title.small {
+    display: none;
+  }
+  .bar .code-chip {
+    margin-right: auto;
+    letter-spacing: 0.1em;
   }
   .deck-chip {
     display: none;
   }
-  .lobby,
+  .prompt {
+    padding: 0.6rem 12px;
+    font-size: 1rem;
+  }
+  .lobby {
+    grid-template-columns: 1fr;
+    padding: 1.5rem 16px;
+  }
+  .lobby .log {
+    max-height: 50vh;
+  }
   .board {
     grid-template-columns: 1fr;
   }
-  .log {
+  /* The log becomes a tab: the table by default, the log when toggled */
+  .board .log {
+    display: none;
+  }
+  .board.show-log .log {
+    display: flex;
+    border-left: none;
+  }
+  .board.show-log .town {
+    display: none;
+  }
+  .replay .board {
+    grid-template-rows: minmax(0, 1fr) minmax(0, 35%);
+  }
+  .replay .board .log {
+    display: flex;
     border-left: none;
     border-top: 1px solid var(--rule);
-    max-height: 40vh;
-    position: static;
+  }
+  .log-toggle {
+    display: inline-block;
+    order: 10;
+  }
+  .town {
+    padding: 0.25rem 8px 1rem;
   }
   .pew {
-    grid-template-columns: 1fr;
-    grid-template-areas: 'name' 'tryals' 'accuse' 'front';
-    padding: 0.6rem 0.25rem;
+    grid-template-columns: auto 1fr;
+    grid-template-areas:
+      'name name'
+      'tryals accuse'
+      'front front';
+    column-gap: 0.75rem;
+    padding: 0.5rem 0.4rem;
+  }
+  .hand-count {
+    flex-basis: auto;
+    margin-left: auto;
+  }
+  .accuse {
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+  .tryal {
+    width: 2.3rem;
+    height: 3rem;
+  }
+  .hand-bar {
+    padding: 0.5rem 12px;
+    gap: 0.5rem;
+  }
+  .hand {
+    flex-basis: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding: 0.5rem 0 0.25rem;
+  }
+  .card {
+    flex: 0 0 auto;
+    min-width: 4rem;
+    min-height: 3.4rem;
+  }
+  .turn-actions {
+    flex-wrap: wrap;
+  }
+  .panel {
+    padding: 0.6rem 12px 0.8rem;
   }
 }
 
@@ -853,15 +1181,9 @@ button.small {
 }
 
 @media (max-width: 760px) {
-  .hand {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    padding-top: 14px;
-  }
+  /* On a phone the enlarged card would cover the players you need to tap; the prompt already explains the card */
   .card-detail {
-    left: 50%;
-    right: auto;
-    transform: translateX(-50%);
+    display: none;
   }
 }
 
@@ -873,16 +1195,20 @@ button.small {
 .prompt.has-event {
   align-items: center;
 }
-.roster-remove {
-  margin-left: auto;
-}
 
 /* Hand: one row; when crowded, cards overlap like a real hand (--overlap is computed by the component) and lift on hover or selection */
-.hand {
+.hand-bar .hand {
   flex-wrap: nowrap;
+  overflow-x: auto;
   min-width: 0;
   gap: 8px;
   padding-top: 14px;
+}
+/* Card pickers in the discard, Proctor and Parris panels: illustrated cards wrap onto several rows */
+.card-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .hand-card + .hand-card {
   margin-left: var(--overlap, 0px);
@@ -903,4 +1229,10 @@ button.small {
 .pew.is-left {
   box-shadow: inset 0 0 0 2px var(--wax);
   border-radius: 4px;
+}
+
+/* Avatar beside the name in the merged player row */
+.pew-name {
+  gap: 0.4rem;
+  align-items: center;
 }

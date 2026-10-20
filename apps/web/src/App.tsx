@@ -1,23 +1,63 @@
-import { useState } from 'react';
-import { MAX_PLAYERS, MIN_PLAYERS } from '@salem/engine';
-import { loginUrl, useAuthConfig, useSalem, type ClientSnapshot } from './net';
-import { Game } from './Game';
+import { useEffect, useState } from 'react';
+import { MAX_PLAYERS, MIN_PLAYERS, ROLE_CHOICE_MAX_PLAYERS } from '@salem/engine';
+import type { ReplayRecord, ReplaySummary } from '../../server/src/protocol';
+import { fetchReplay, fetchReplayList, loginUrl, useAuthConfig, useSalem, type ClientSnapshot, type Salem } from './net';
 import { Avatar } from './Avatar';
+import { Game } from './Game';
 import { LogPanel } from './LogPanel';
+import { Replay } from './Replay';
+import { useVoice, type Voice } from './voice';
+import { VoiceControls } from './VoiceControls';
+
+/** Computer players seated by the solo-play button (a 5-player table) */
+const SOLO_BOTS = 4;
 
 export function App() {
-  const salem = useSalem();
-  const { snap } = salem;
+  const replayId = new URLSearchParams(location.search).get('replay');
+  const [replay, setReplay] = useState<ReplayRecord | null>(null);
+  const [replayError, setReplayError] = useState<string | null>(null);
 
-  if (!snap) return <Entry {...salem} />;
-  if (!snap.view) return <Lobby {...salem} snap={snap} />;
-  return <Game snap={snap} view={snap.view} act={salem.act} send={salem.send} error={salem.error} onLeave={salem.leave} />;
+  useEffect(() => {
+    if (replayId) fetchReplay(replayId).then(setReplay, (e: Error) => setReplayError(e.message));
+  }, [replayId]);
+
+  const closeReplay = () => {
+    setReplay(null);
+    if (replayId) history.replaceState(null, '', location.pathname);
+  };
+
+  if (replay) return <Replay record={replay} onClose={closeReplay} />;
+  if (replayId && !replayError) return <p className="loading">載入重播中…</p>;
+  return <Live onReplay={setReplay} replayError={replayError} />;
 }
 
-function Entry({ connect, busy, error, me, logout }: ReturnType<typeof useSalem>) {
+function Live({ onReplay, replayError }: { onReplay: (r: ReplayRecord) => void; replayError: string | null }) {
+  const salem = useSalem();
+  const voice = useVoice(salem.snap, salem.send, salem.onRtc);
+  const { snap } = salem;
+
+  if (!snap) return <Entry salem={salem} onReplay={onReplay} replayError={replayError} />;
+  if (!snap.view) return <Lobby salem={salem} snap={snap} voice={voice} />;
+  return (
+    <Game
+      snap={snap}
+      view={snap.view}
+      act={salem.act}
+      send={salem.send}
+      error={salem.error}
+      connection={salem.connection}
+      voice={voice}
+      onLeave={salem.leave}
+    />
+  );
+}
+
+function Entry({ salem, onReplay, replayError }: { salem: Salem; onReplay: (r: ReplayRecord) => void; replayError: string | null }) {
+  const { connect, busy, error, connection, me, logout } = salem;
+  const config = useAuthConfig();
   const [code, setCode] = useState('');
   const [devName, setDevName] = useState('');
-  const config = useAuthConfig();
+  const [spectate, setSpectate] = useState(false);
 
   return (
     <main className="entry">
@@ -26,12 +66,14 @@ function Entry({ connect, busy, error, me, logout }: ReturnType<typeof useSalem>
       </h1>
       <p className="lede">麻薩諸塞州，塞勒姆。女巫就藏在你們之中。指控你懷疑的人，保護你信任的人。小心，到了夜晚，事情就不一樣了。</p>
 
+      {connection === 'reconnecting' && <p className="banner">正在回到剛才的房間…</p>}
+
       {me ? (
         <form
           className="entry-form"
           onSubmit={(e) => {
             e.preventDefault();
-            void connect(code.trim() ? 'join' : 'create', code);
+            void connect(code.trim() ? 'join' : 'create', code, spectate);
           }}
         >
           <div className="whoami">
@@ -49,11 +91,23 @@ function Entry({ connect, busy, error, me, logout }: ReturnType<typeof useSalem>
               maxLength={5}
               placeholder="ABCDE"
               className="code-input"
+              autoCapitalize="characters"
             />
           </label>
+          {code.trim() && (
+            <label className="check">
+              <input type="checkbox" checked={spectate} onChange={(e) => setSpectate(e.target.checked)} />
+              只觀戰，不入座（遊戲進行中加入一律是觀戰）
+            </label>
+          )}
           <button type="submit" className="primary" disabled={busy}>
-            {busy ? '連線中…' : code.trim() ? '加入房間' : '建立新房間'}
+            {busy ? '連線中…' : code.trim() ? (spectate ? '進去觀戰' : '加入房間') : '建立新房間'}
           </button>
+          {!code.trim() && (
+            <button type="button" disabled={busy} onClick={() => void connect('create', undefined, false, SOLO_BOTS)}>
+              單人遊戲（和 {SOLO_BOTS} 位電腦玩家）
+            </button>
+          )}
           {error && <p className="error">{error}</p>}
         </form>
       ) : (
@@ -86,14 +140,67 @@ function Entry({ connect, busy, error, me, logout }: ReturnType<typeof useSalem>
           {error && <p className="error">{error}</p>}
         </div>
       )}
+
+      <ReplayPicker onReplay={onReplay} replayError={replayError} />
     </main>
   );
 }
 
-function Lobby({ snap, send, leave, error }: { snap: ClientSnapshot } & ReturnType<typeof useSalem>) {
+function ReplayPicker({ onReplay, replayError }: { onReplay: (r: ReplayRecord) => void; replayError: string | null }) {
+  const [list, setList] = useState<ReplaySummary[] | null>(null);
+  const [error, setError] = useState<string | null>(replayError);
+
+  const open = (id: string) => fetchReplay(id).then(onReplay, (e: Error) => setError(e.message));
+
+  return (
+    <section className="replays">
+      <h2>對戰紀錄</h2>
+      <div className="turn-actions">
+        <button className="small" onClick={() => fetchReplayList().then(setList, (e: Error) => setError(e.message))}>
+          最近的對戰
+        </button>
+        <label className="button-link small">
+          開啟紀錄檔…
+          <input
+            type="file"
+            accept="application/json,.json"
+            className="visually-hidden"
+            onChange={async (e) => {
+              const f = e.target.files?.[0];
+              if (!f) return;
+              try {
+                onReplay(JSON.parse(await f.text()) as ReplayRecord);
+              } catch {
+                setError('這不是有效的對戰紀錄檔');
+              }
+            }}
+          />
+        </label>
+      </div>
+      {error && <p className="error">{error}</p>}
+      {list && list.length === 0 && <p className="muted">還沒有任何對戰紀錄。</p>}
+      {list && list.length > 0 && (
+        <ul className="replay-list">
+          {list.map((r) => (
+            <li key={r.id}>
+              <button className="ghost" onClick={() => void open(r.id)}>
+                {new Date(r.startedAt).toLocaleString()}・{r.players.length} 人・{r.winner === 'town' ? '鎮民勝' : r.winner === 'witches' ? '女巫勝' : '未完成'}
+              </button>
+              <span className="muted small-text">{r.players.join('、')}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function Lobby({ salem, snap, voice }: { salem: Salem; snap: ClientSnapshot; voice: Voice }) {
+  const { send, leave, error, setOptions } = salem;
   const isHost = snap.hostId === snap.me;
   const n = snap.lobby.length;
   const canStart = n >= MIN_PLAYERS && n <= MAX_PLAYERS;
+  const spectating = snap.seat === 'spectator';
 
   return (
     <main className="lobby">
@@ -101,35 +208,90 @@ function Lobby({ snap, send, leave, error }: { snap: ClientSnapshot } & ReturnTy
         <p className="muted">把房號告訴朋友，請他們在首頁輸入</p>
         <div className="room-code">{snap.roomCode}</div>
 
-        <h2>鎮民名冊（{n} / {MAX_PLAYERS}）</h2>
+        <h2>
+          鎮民名冊（{n} / {MAX_PLAYERS}）
+        </h2>
         <ol className="roster">
           {snap.lobby.map((p) => (
             <li key={p.id}>
               <Avatar name={p.name} picture={p.picture} size={28} />
               {p.name}
+              {p.bot && <span className="tag">電腦</span>}
               {p.id === snap.hostId && <span className="tag">房主</span>}
               {p.id === snap.me && <span className="tag">你</span>}
-              {p.bot && <span className="tag">電腦</span>}
+              {!p.connected && <span className="tag offline">離線</span>}
+              {snap.voice.includes(p.id) && <span className="tag">語音</span>}
               {p.bot && isHost && (
-                <button className="ghost small roster-remove" onClick={() => send('removeBot', { id: p.id })} aria-label={`移除電腦玩家 ${p.name}`}>
+                <button className="ghost small" onClick={() => send('removeBot', { id: p.id })} aria-label={`移除電腦玩家 ${p.name}`}>
                   移除
                 </button>
               )}
             </li>
           ))}
         </ol>
-
-        {isHost && n < MAX_PLAYERS && (
-          <button onClick={() => send('addBot')}>加入電腦玩家</button>
+        {isHost && (
+          <div className="turn-actions">
+            <button className="small" onClick={() => send('addBots', { count: 1 })} disabled={n >= MAX_PLAYERS}>
+              加入電腦玩家
+            </button>
+            {n < MIN_PLAYERS && (
+              <button className="small" onClick={() => send('addBots', { count: MIN_PLAYERS - n })}>
+                用電腦補到 {MIN_PLAYERS} 人
+              </button>
+            )}
+          </div>
         )}
-        {isHost ? (
+
+        {snap.spectators.length > 0 && (
+          <>
+            <h2>觀戰席</h2>
+            <ul className="roster">
+              {snap.spectators.map((p) => (
+                <li key={p.id}>
+                  <Avatar name={p.name} picture={p.picture} size={28} />
+                  {p.name}
+                  {p.id === snap.me && <span className="tag">你</span>}
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+
+        <fieldset className="options" disabled={!isHost}>
+          <legend>規則{isHost ? '' : '（由房主決定）'}</legend>
+          <label className="check">
+            <input type="checkbox" checked={snap.options.roles} onChange={(e) => setOptions({ roles: e.target.checked })} />
+            鎮公所角色（{ROLE_CHOICE_MAX_PLAYERS} 人以下每人從 2 位中選 1 位）
+          </label>
+          <label className="check">
+            <input type="checkbox" checked={snap.options.extraWitch} onChange={(e) => setOptions({ extraWitch: e.target.checked })} />
+            進階：多一張女巫牌
+          </label>
+        </fieldset>
+
+        {spectating ? (
+          <button onClick={() => send('seat', { spectate: false })} disabled={n >= MAX_PLAYERS}>
+            入座參加遊戲
+          </button>
+        ) : isHost ? (
           <button className="primary" disabled={!canStart} onClick={() => send('start')}>
             {canStart ? '開始遊戲' : `還需要 ${MIN_PLAYERS - n} 人才能開始`}
           </button>
         ) : (
           <p className="muted">等待房主開始遊戲…</p>
         )}
+        {!spectating && (
+          <button className="ghost small" onClick={() => send('seat', { spectate: true })}>
+            改成觀戰
+          </button>
+        )}
+        <VoiceControls voice={voice} />
         {error && <p className="error">{error}</p>}
+        {snap.lastReplayId && (
+          <a className="button-link" href={`?replay=${snap.lastReplayId}`} target="_blank" rel="noreferrer">
+            觀看上一場的重播
+          </a>
+        )}
         <button className="ghost" onClick={leave}>
           離開房間
         </button>

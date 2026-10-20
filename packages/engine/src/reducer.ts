@@ -1,15 +1,19 @@
-import { ACCUSATION_THRESHOLD, ACCUSATION_VALUE, CARD_NAME, isBlue, isDisabledInEndgame, isRed } from './cards';
+import { ACCUSATION_THRESHOLD, ACCUSATION_VALUE, CARD_COLOR, CARD_NAME, isBlue, isDisabledInEndgame, isRed } from './cards';
+import { ABILITY_LIMIT, ROLES } from './roles';
 import { Rng } from './rng';
 import type {
   Action,
   ActionEnvelope,
   Card,
+  CardType,
   GameEvent,
   GameState,
+  LimitedAbility,
   Phase,
   Player,
   PlayerId,
   ReduceResult,
+  RoleId,
   Tryal,
 } from './types';
 
@@ -18,6 +22,11 @@ const TRYAL_NAME: Record<Tryal['kind'], string> = {
   constable: '警長',
   not_a_witch: '平民',
 };
+
+/** Max cards John Proctor may keep */
+export const SALVAGE_MAX = 3;
+/** Max cards Samuel Parris may take from the discard pile */
+export const PARRIS_MAX = 2;
 
 // ---------- Pure query helpers (also used by projection and server) ----------
 
@@ -36,6 +45,36 @@ export function nextAlive(s: GameState, from: PlayerId): PlayerId {
   return from;
 }
 
+/** The next living player counter-clockwise ("the player on the right") */
+export function prevAlive(s: GameState, from: PlayerId): PlayerId {
+  const n = s.seats.length;
+  const start = s.seats.indexOf(from);
+  for (let i = 1; i <= n; i++) {
+    const id = s.seats[(start - i + n) % n]!;
+    if (s.players[id]!.alive) return id;
+  }
+  return from;
+}
+
+/** The ability a player actually has: Martha Corey copies the first living player on her right */
+export function effectiveRole(s: GameState, pid: PlayerId): RoleId | null {
+  const role = s.players[pid]?.role ?? null;
+  if (role !== 'martha') return role;
+  const right = prevAlive(s, pid);
+  if (right === pid) return null;
+  const copied = s.players[right]!.role;
+  return copied === 'martha' ? null : copied;
+}
+
+export function hasRole(s: GameState, pid: PlayerId, role: RoleId): boolean {
+  return !!s.players[pid]?.alive && effectiveRole(s, pid) === role;
+}
+
+export function usesLeft(s: GameState, pid: PlayerId, ability: LimitedAbility): number {
+  if (!hasRole(s, pid, ability)) return 0;
+  return ABILITY_LIMIT[ability] - (s.players[pid]!.uses[ability] ?? 0);
+}
+
 export function aliveWitches(s: GameState): Player[] {
   return alivePlayers(s).filter((p) => p.everWitch);
 }
@@ -49,18 +88,37 @@ export function blackCatHolder(s: GameState): Player | undefined {
   return alivePlayers(s).find((p) => p.front.some((c) => c.type === 'black_cat'));
 }
 
-export function accusationTotal(p: Player): number {
-  return p.front.reduce((sum, c) => sum + (ACCUSATION_VALUE[c.type] ?? 0), 0);
+/** The type a card counts as (Will Griggs' Alibi counts as a Witness) */
+export function effectiveType(c: Card): CardType {
+  return c.as ?? c.type;
+}
+
+/** Accusation points in front of a player; pass the state to apply Cotton Mather */
+export function accusationTotal(p: Player, s?: GameState): number {
+  const cotton = !!s && hasRole(s, p.id, 'cotton');
+  return p.front.reduce((sum, c) => {
+    const t = effectiveType(c);
+    return sum + (cotton && t === 'evidence' ? 1 : (ACCUSATION_VALUE[t] ?? 0));
+  }, 0);
+}
+
+/** Points needed to put `target` on trial when `accuser` places the latest card */
+export function accusationThreshold(s: GameState, target: PlayerId, accuser?: PlayerId): number {
+  let n = ACCUSATION_THRESHOLD;
+  if (hasRole(s, target, 'george')) n++;
+  if (accuser && hasRole(s, accuser, 'danforth')) n--;
+  return n;
 }
 
 export function unrevealed(p: Player): Tryal[] {
   return p.tryals.filter((t) => !t.revealed);
 }
 
-/** Matchmaker partner: exactly two different players each have a matchmaker in front of them */
+/** Matchmaker partner: exactly two different players each have a matchmaker in front of them (Mary Warren is immune) */
 export function matchmakerPartner(s: GameState, pid: PlayerId): PlayerId | undefined {
   const holders = alivePlayers(s).filter((p) => p.front.some((c) => c.type === 'matchmaker'));
   if (holders.length !== 2) return undefined;
+  if (holders.some((h) => hasRole(s, h.id, 'mary'))) return undefined;
   if (holders[0]!.id === pid) return holders[1]!.id;
   if (holders[1]!.id === pid) return holders[0]!.id;
   return undefined;
@@ -73,16 +131,50 @@ export function conspiracyPickers(s: GameState): PlayerId[] {
     .map((p) => p.id);
 }
 
+/** Players the current phase is waiting on (used by the server to shorten timers for disconnected players) */
+export function waitingOn(s: GameState): PlayerId[] {
+  const ph = s.phase;
+  const alive = alivePlayers(s).map((p) => p.id);
+  switch (ph.kind) {
+    case 'roles':
+      return alive.filter((id) => !ph.picks[id]);
+    case 'dawn':
+      return aliveWitches(s).filter((p) => !ph.votes[p.id]).map((p) => p.id);
+    case 'turn':
+      return [s.turn.player];
+    case 'reveal':
+      return [ph.chooser];
+    case 'arrange':
+      return [ph.player];
+    case 'salvage':
+      return s.salvage[0] ? [s.salvage[0].chooser] : [];
+    case 'night':
+      if (ph.step === 'witches') return aliveWitches(s).filter((p) => !ph.votes[p.id]).map((p) => p.id);
+      if (ph.step === 'constable') return currentConstable(s) ? [currentConstable(s)!.id] : [];
+      return alive.filter((id) => !ph.passed.includes(id));
+    case 'conspiracy':
+      return conspiracyPickers(s).filter((id) => !ph.picks[id]);
+    case 'game_over':
+      return [];
+  }
+}
+
 /** Seconds allowed for each phase; the server schedules a TIMEOUT from this */
 export function phaseTimeoutSeconds(s: GameState): number | null {
   const p = s.phase;
   switch (p.kind) {
+    case 'roles':
+      return 45;
     case 'dawn':
       return 30;
     case 'turn':
       return 90;
     case 'reveal':
       return 20;
+    case 'arrange':
+      return 60;
+    case 'salvage':
+      return 30;
     case 'night':
       return p.step === 'witches' ? 45 : p.step === 'constable' ? 20 : 15;
     case 'conspiracy':
@@ -99,6 +191,9 @@ export function reduce(state: GameState, env: ActionEnvelope): ReduceResult {
   const g = new Game(structuredClone(state));
   const error = g.apply(env.actor, env.action);
   if (error) return { ok: false, error };
+  g.startSalvage();
+  // A Will Griggs Alibi is only a Witness while in front of a player; the deck is rebuilt from the discard pile
+  for (const c of g.s.discard) delete c.as;
   g.s.rng = g.rng.seed;
   return { ok: true, state: g.s, events: g.events };
 }
@@ -128,6 +223,19 @@ class Game {
     return this.p(id).name;
   }
 
+  has(id: PlayerId, role: RoleId) {
+    return hasRole(this.s, id, role);
+  }
+
+  /** "Name（角色）" for log lines about abilities */
+  roleLabel(id: PlayerId, role: RoleId) {
+    return `${this.name(id)}（${ROLES[role].name}）`;
+  }
+
+  useAbility(pl: Player, ability: LimitedAbility) {
+    pl.uses[ability] = (pl.uses[ability] ?? 0) + 1;
+  }
+
   get over() {
     return this.s.phase.kind === 'game_over';
   }
@@ -149,10 +257,20 @@ class Game {
     if (!me.alive) return '死者不能行動';
 
     switch (a.type) {
+      case 'PICK_ROLE':
+        return this.pickRole(me, a.role);
       case 'DAWN_GIVE_CAT':
         return this.dawnGiveCat(me, a.target);
       case 'DRAW':
         return this.draw(me);
+      case 'DRAW_DISCARD':
+        return this.drawDiscard(me, a.cardIds);
+      case 'ARRANGE_START':
+        return this.arrangeStart(me);
+      case 'ARRANGE_DECK':
+        return this.arrangeDeck(me, a.order);
+      case 'SALVAGE':
+        return this.salvagePick(me, a.cardIds);
       case 'PLAY_CARD':
         return this.playCard(me, a);
       case 'END_TURN':
@@ -169,12 +287,18 @@ class Game {
         return this.nightPass(me);
       case 'CONSPIRACY_PICK':
         return this.conspiracyPick(me, a.tryalId);
+      default:
+        return '未知的動作';
     }
   }
 
   timeout(): string | undefined {
     const ph = this.s.phase;
     switch (ph.kind) {
+      case 'roles':
+        for (const pid of Object.keys(ph.offers)) ph.picks[pid] ??= ph.offers[pid]![0]!;
+        this.finishRoles();
+        return;
       case 'dawn':
         this.resolveDawn();
         return;
@@ -188,6 +312,13 @@ class Game {
       case 'reveal': {
         const t = this.rng.pick(unrevealed(this.p(ph.target)));
         return this.chooseReveal(this.p(ph.chooser), t.id);
+      }
+      case 'arrange':
+        // Keep the current order and draw
+        return this.arrangeDeck(this.p(ph.player), this.s.deck.filter((c) => c.type !== 'night').map((c) => c.id));
+      case 'salvage': {
+        const cur = this.s.salvage[0]!;
+        return this.salvagePick(this.p(cur.chooser), cur.cards.slice(0, SALVAGE_MAX).map((c) => c.id));
       }
       case 'night':
         if (ph.step === 'witches') this.finishWitchStep();
@@ -203,6 +334,63 @@ class Game {
       case 'game_over':
         return;
     }
+  }
+
+  // ----- Town Hall characters -----
+
+  pickRole(me: Player, role: RoleId): string | undefined {
+    const ph = this.s.phase;
+    if (ph.kind !== 'roles') return '現在不是選角色的時間';
+    if (!ph.offers[me.id]?.includes(role)) return '請從發給你的角色中選一位';
+    ph.picks[me.id] = role;
+    if (Object.keys(ph.offers).every((pid) => ph.picks[pid])) this.finishRoles();
+  }
+
+  finishRoles() {
+    const ph = this.s.phase;
+    if (ph.kind !== 'roles') return;
+    for (const [pid, role] of Object.entries(ph.picks)) this.p(pid).role = role;
+    this.log(
+      `角色公開：${this.s.seats.map((id) => `${this.name(id)}＝${ROLES[this.p(id).role!].name}`).join('、')}`,
+    );
+    this.setPhase({ kind: 'dawn', votes: {} });
+  }
+
+  /** Called after each action: if John Proctor has a pending pick, interrupt whatever phase we are in */
+  startSalvage() {
+    if (this.over) {
+      // Cards still waiting for Proctor go to the discard pile so the card count stays whole
+      for (const sv of this.s.salvage.splice(0)) this.s.discard.push(...sv.cards);
+      return;
+    }
+    if (this.s.phase.kind === 'salvage') return;
+    while (this.s.salvage.length) {
+      const sv = this.s.salvage[0]!;
+      if (this.p(sv.chooser).alive && sv.cards.length) {
+        this.setPhase({ kind: 'salvage', resume: this.s.phase });
+        this.log(`${this.roleLabel(sv.chooser, 'proctor')} 正在挑選 ${this.name(sv.from)} 留下的手牌`);
+        return;
+      }
+      this.s.discard.push(...sv.cards);
+      this.s.salvage.shift();
+    }
+  }
+
+  salvagePick(me: Player, cardIds: string[]): string | undefined {
+    const ph = this.s.phase;
+    const sv = this.s.salvage[0];
+    if (ph.kind !== 'salvage' || !sv) return '現在不能挑牌';
+    if (sv.chooser !== me.id) return '不是由你挑牌';
+    const ids = new Set(cardIds);
+    if (ids.size > SALVAGE_MAX) return `最多只能拿 ${SALVAGE_MAX} 張`;
+    if ([...ids].some((id) => !sv.cards.some((c) => c.id === id))) return '只能挑死者留下的牌';
+    const kept = sv.cards.filter((c) => ids.has(c.id));
+    me.hand.push(...kept);
+    this.s.discard.push(...sv.cards.filter((c) => !ids.has(c.id)));
+    this.s.salvage.shift();
+    this.log(`${me.name} 從 ${this.name(sv.from)} 的遺物中拿了 ${kept.length} 張牌`);
+    this.setPhase(ph.resume);
+    // startSalvage (run after every action) opens the next pending pick, if any
   }
 
   // ----- Win and death -----
@@ -229,7 +417,11 @@ class Game {
     const partner = matchmakerPartner(this.s, pid);
     pl.alive = false;
     for (const t of pl.tryals) t.revealed = true;
-    this.s.discard.push(...pl.hand, ...pl.front);
+    this.s.discard.push(...pl.front);
+    // John Proctor (the first one clockwise from the dead player) gets to pick from the dead player's hand
+    const proctor = pl.hand.length ? this.findClockwise(pid, (id) => this.has(id, 'proctor')) : undefined;
+    if (proctor) this.s.salvage.push({ chooser: proctor, from: pid, cards: pl.hand });
+    else this.s.discard.push(...pl.hand);
     pl.hand = [];
     pl.front = [];
     this.log(`${pl.name} 死亡（${cause}）。曾經是女巫：${pl.everWitch ? '是' : '否'}`);
@@ -238,6 +430,16 @@ class Game {
     if (partner) this.kill(partner, '情侶殉情');
     if (this.over) return;
     if (alivePlayers(this.s).length === 2) this.enterEndgame();
+  }
+
+  findClockwise(from: PlayerId, pred: (id: PlayerId) => boolean): PlayerId | undefined {
+    const n = this.s.seats.length;
+    const start = this.s.seats.indexOf(from);
+    for (let i = 1; i < n; i++) {
+      const id = this.s.seats[(start + i) % n]!;
+      if (this.p(id).alive && pred(id)) return id;
+    }
+    return undefined;
   }
 
   /** With 2 players left, all blue cards are removed from the game */
@@ -301,7 +503,7 @@ class Game {
       this.log(`${pl.name} 被拘留，跳過這回合`);
       cur = nextAlive(this.s, cur);
     }
-    this.s.turn = { player: cur, mode: 'idle', drawsLeft: 0 };
+    this.s.turn = { player: cur, mode: 'idle', drawsLeft: 0, accusationsDrawn: 0, bonusDrawn: false };
     this.setPhase({ kind: 'turn' });
   }
 
@@ -321,15 +523,26 @@ class Game {
       this.setPhase({ kind: 'turn' });
       return;
     }
-    while (turn.drawsLeft > 0) {
-      turn.drawsLeft--;
-      const card = this.drawOne();
-      if (!card) break;
-      if (card.type === 'night' || card.type === 'conspiracy') {
-        this.handleBlack(card);
-        return;
+    for (;;) {
+      while (turn.drawsLeft > 0) {
+        turn.drawsLeft--;
+        const card = this.drawOne();
+        if (!card) break;
+        if (card.type === 'night' || card.type === 'conspiracy') {
+          this.handleBlack(card);
+          return;
+        }
+        if (card.type === 'accusation') turn.accusationsDrawn++;
+        this.p(turn.player).hand.push(card);
       }
-      this.p(turn.player).hand.push(card);
+      // Giles Corey: two accusations in one draw are shown and he draws one more
+      if (turn.accusationsDrawn >= 2 && !turn.bonusDrawn && this.has(turn.player, 'giles')) {
+        turn.bonusDrawn = true;
+        turn.drawsLeft = 1;
+        this.log(`${this.roleLabel(turn.player, 'giles')} 抽到兩張指控，展示後再抽一張`);
+        continue;
+      }
+      break;
     }
     this.endTurn();
   }
@@ -352,6 +565,33 @@ class Game {
     }
   }
 
+  /** Draw for an ability (Ann Putnam, Rebecca Nurse): black cards go back into the deck and are not resolved */
+  drawForAbility(pl: Player, count: number) {
+    let got = 0;
+    const setAside: Card[] = [];
+    while (got < count) {
+      const c = this.drawOne();
+      if (!c) break;
+      if (CARD_COLOR[c.type] === 'black') {
+        setAside.push(c);
+        continue;
+      }
+      pl.hand.push(c);
+      got++;
+    }
+    for (const c of setAside) {
+      if (c.type === 'night') this.s.deck.push(c);
+      else this.s.deck.splice(this.rng.int(this.deckTopLength() + 1), 0, c);
+    }
+    return got;
+  }
+
+  /** Length of the deck above a night card sitting at the bottom */
+  deckTopLength() {
+    const d = this.s.deck;
+    return d.length && d[d.length - 1]!.type === 'night' ? d.length - 1 : d.length;
+  }
+
   draw(me: Player): string | undefined {
     if (this.s.phase.kind !== 'turn') return '現在不能抽牌';
     if (this.s.turn.player !== me.id) return '還沒輪到你';
@@ -360,6 +600,48 @@ class Game {
     this.s.turn.drawsLeft = 2;
     this.log(`${me.name} 選擇抽兩張牌`);
     this.continueTurn();
+  }
+
+  drawDiscard(me: Player, cardIds: string[]): string | undefined {
+    if (this.s.phase.kind !== 'turn') return '現在不能抽牌';
+    if (this.s.turn.player !== me.id) return '還沒輪到你';
+    if (this.s.turn.mode !== 'idle') return '這回合已經出過牌，不能抽牌';
+    if (usesLeft(this.s, me.id, 'parris') <= 0) return '你不能使用這個能力';
+    const ids = [...new Set(cardIds)];
+    if (ids.length === 0 || ids.length > PARRIS_MAX) return `請從棄牌堆選 1–${PARRIS_MAX} 張牌`;
+    const picked = ids.map((id) => this.s.discard.find((c) => c.id === id));
+    if (picked.some((c) => !c || CARD_COLOR[c.type] === 'black')) return '只能選棄牌堆裡的非黑牌';
+    if (alivePlayers(this.s).length === 2 && picked.some((c) => isDisabledInEndgame(c!.type))) return '只剩兩人時不能拿這張牌';
+    this.s.discard = this.s.discard.filter((c) => !ids.includes(c.id));
+    me.hand.push(...(picked as Card[]));
+    this.useAbility(me, 'parris');
+    this.s.turn.mode = 'drawing';
+    this.log(`${this.roleLabel(me.id, 'parris')} 從棄牌堆拿了 ${picked.map((c) => `「${CARD_NAME[c!.type]}」`).join('')}`);
+    this.endTurn();
+  }
+
+  arrangeStart(me: Player): string | undefined {
+    if (this.s.phase.kind !== 'turn') return '現在不能這樣做';
+    if (this.s.turn.player !== me.id) return '還沒輪到你';
+    if (this.s.turn.mode !== 'idle') return '這回合已經出過牌';
+    if (usesLeft(this.s, me.id, 'tituba') <= 0) return '你不能使用這個能力';
+    this.useAbility(me, 'tituba');
+    this.log(`${this.roleLabel(me.id, 'tituba')} 查看並重排牌堆`);
+    this.setPhase({ kind: 'arrange', player: me.id });
+  }
+
+  arrangeDeck(me: Player, order: string[]): string | undefined {
+    const ph = this.s.phase;
+    if (ph.kind !== 'arrange' || ph.player !== me.id) return '現在不能重排牌堆';
+    const movable = this.s.deck.filter((c) => c.type !== 'night');
+    const byId = new Map(movable.map((c) => [c.id, c]));
+    if (order.length !== movable.length || new Set(order).size !== order.length || order.some((id) => !byId.has(id))) {
+      return '請排列牌堆裡的每一張牌（夜晚固定在最底）';
+    }
+    const nights = this.s.deck.filter((c) => c.type === 'night');
+    this.s.deck = [...order.map((id) => byId.get(id)!), ...nights];
+    this.setPhase({ kind: 'turn' });
+    return this.draw(me);
   }
 
   endTurnAction(me: Player): string | undefined {
@@ -383,8 +665,19 @@ class Game {
     if (target.id === me.id) return '不能對自己出牌';
     if (alivePlayers(this.s).length === 2 && isDisabledInEndgame(card.type)) return '只剩兩人時不能使用這張牌';
 
+    // Will Griggs plays an Alibi as a Witness (a rejected play discards the cloned state, so marking early is safe)
+    if (a.asWitness) {
+      if (card.type !== 'alibi' || !this.has(me.id, 'griggs')) return '只有 Will Griggs 能把辯護當作目擊';
+      card.as = 'witness';
+    }
+    const type = effectiveType(card);
+
+    if ((type === 'arson' || type === 'robbery') && this.has(target.id, 'sarah')) {
+      return `搶劫、縱火對 ${this.roleLabel(target.id, 'sarah')} 無效`;
+    }
+
     let second: Player | undefined;
-    if (card.type === 'robbery' || card.type === 'scapegoat') {
+    if (type === 'robbery' || type === 'scapegoat') {
       second = a.secondTarget ? this.s.players[a.secondTarget] : undefined;
       if (!second?.alive) return '需要指定第二位目標';
       if (second.id === me.id) return '不能把牌轉給自己';
@@ -392,27 +685,27 @@ class Game {
     }
 
     // Validate effect preconditions before removing the card from the hand
-    if (isRed(card.type) && target.front.some((c) => c.type === 'piety')) return '信徒不能被打紅牌';
+    if (isRed(type) && target.front.some((c) => c.type === 'piety')) return '信徒不能被打紅牌';
     let curseTarget: Card | undefined;
-    if (card.type === 'curse') {
+    if (type === 'curse') {
       curseTarget = target.front.find((c) => c.id === a.targetCardId && isBlue(c.type));
       if (!curseTarget) return '請指定目標面前的一張藍牌';
     }
-    if (card.type === 'alibi' && !target.front.some((c) => c.type === 'accusation' || c.type === 'evidence')) {
+    if (type === 'alibi' && !target.front.some((c) => c.type === 'accusation' || c.type === 'evidence')) {
       return '目標身上沒有可移除的指控';
     }
 
     me.hand.splice(idx, 1);
     this.s.turn.mode = 'playing';
-    const label = `${me.name} 對 ${target.name} 打出「${CARD_NAME[card.type]}」`;
+    const label = `${me.name} 對 ${target.name} 打出「${CARD_NAME[card.type]}」${card.as ? `當作「${CARD_NAME[card.as]}」` : ''}`;
 
-    if (isRed(card.type)) {
+    if (isRed(type)) {
       target.front.push(card);
-      this.log(`${label}（累計 ${accusationTotal(target)} 點）`);
+      this.log(`${label}（累計 ${accusationTotal(target, this.s)} 點）`);
       this.checkAccusations(target, me.id);
       return;
     }
-    if (isBlue(card.type)) {
+    if (isBlue(type)) {
       target.front.push(card);
       this.log(label);
       this.dedupeMatchmaker(target);
@@ -420,7 +713,7 @@ class Game {
     }
 
     this.s.discard.push(card);
-    switch (card.type) {
+    switch (type) {
       case 'alibi': {
         let removed = 0;
         target.front = target.front.filter((c) => {
@@ -435,7 +728,7 @@ class Game {
           const i = target.front.findIndex((c) => c.type === 'evidence');
           this.s.discard.push(...target.front.splice(i, 1));
         }
-        this.log(`${label}，移除部分指控（剩 ${accusationTotal(target)} 點）`);
+        this.log(`${label}，移除部分指控（剩 ${accusationTotal(target, this.s)} 點）`);
         break;
       }
       case 'arson':
@@ -475,9 +768,15 @@ class Game {
   }
 
   checkAccusations(target: Player, accuser: PlayerId) {
-    if (accusationTotal(target) >= ACCUSATION_THRESHOLD && unrevealed(target).length > 0) {
-      this.log(`${target.name} 累積 ${ACCUSATION_THRESHOLD} 點指控，${this.name(accuser)} 要選一張審判牌翻開`);
+    const threshold = accusationThreshold(this.s, target.id, accuser);
+    if (accusationTotal(target, this.s) >= threshold && unrevealed(target).length > 0) {
+      this.log(`${target.name} 累積 ${threshold} 點指控，${this.name(accuser)} 要選一張審判牌翻開`);
       this.setPhase({ kind: 'reveal', chooser: accuser, target: target.id, then: 'resume' });
+      // Ann Putnam: draws 2 as soon as she starts a trial
+      if (this.has(accuser, 'ann')) {
+        const n = this.drawForAbility(this.p(accuser), 2);
+        this.log(`${this.roleLabel(accuser, 'ann')} 發起審判，抽了 ${n} 張牌`);
+      }
     }
   }
 
@@ -488,17 +787,38 @@ class Game {
     const target = this.p(ph.target);
     if (!target.tryals.some((t) => t.id === tryalId && !t.revealed)) return '請選一張未翻開的審判牌';
 
-    if (ph.then === 'resume') {
+    const trial = ph.then === 'resume';
+    if (trial) {
       // After an accusation reveal, discard all red cards; overflow does not carry over
-      const reds = target.front.filter((c) => isRed(c.type));
-      target.front = target.front.filter((c) => !isRed(c.type));
+      const reds = target.front.filter((c) => isRed(effectiveType(c)));
+      target.front = target.front.filter((c) => !isRed(effectiveType(c)));
       this.s.discard.push(...reds);
     }
     const then = ph.then;
-    this.revealTryal(target.id, tryalId, then === 'resume' ? '審判' : '黑貓');
+    this.revealTryal(target.id, tryalId, trial ? '審判' : '黑貓');
     if (this.over) return;
+    if (trial) this.afterTrial(me.id, target.id);
     if (then === 'conspiracy_pass') this.startConspiracyPass();
     else this.continueTurn();
+  }
+
+  afterTrial(chooser: PlayerId, target: PlayerId) {
+    // Abigail Williams: her own red cards are discarded after a trial she started
+    if (this.has(chooser, 'abigail')) {
+      const pl = this.p(chooser);
+      const reds = pl.front.filter((c) => isRed(effectiveType(c)));
+      if (reds.length) {
+        pl.front = pl.front.filter((c) => !isRed(effectiveType(c)));
+        this.s.discard.push(...reds);
+        this.log(`${this.roleLabel(chooser, 'abigail')} 丟棄自己面前的 ${reds.length} 張紅牌`);
+      }
+    }
+    // Rebecca Nurse: draws 1 whenever someone else's tryal is revealed by a trial
+    for (const id of this.s.seats) {
+      if (id === target || !this.has(id, 'rebecca')) continue;
+      const n = this.drawForAbility(this.p(id), 1);
+      if (n) this.log(`${this.roleLabel(id, 'rebecca')} 抽了 1 張牌`);
+    }
   }
 
   // ----- Black cards -----
@@ -513,7 +833,10 @@ class Game {
     this.s.discard.push(card);
     this.log(`${this.name(this.s.turn.player)} 抽到「傳染」！`);
     const cat = blackCatHolder(this.s);
-    if (cat && unrevealed(cat).length > 0) {
+    if (cat && this.has(cat.id, 'mary')) {
+      this.log(`黑貓對 ${this.roleLabel(cat.id, 'mary')} 無效`);
+      this.startConspiracyPass();
+    } else if (cat && unrevealed(cat).length > 0) {
       // The black cat holder chooses which of their own tryal cards to reveal
       this.setPhase({ kind: 'reveal', chooser: cat.id, target: cat.id, then: 'conspiracy_pass' });
     } else {
@@ -604,10 +927,20 @@ class Game {
     this.log('天亮了。在公布死者前，任何人都可以自首（翻開自己一張審判牌，換取今晚免死）');
   }
 
-  confess(me: Player, tryalId: string): string | undefined {
+  confess(me: Player, tryalId: string | undefined): string | undefined {
     const ph = this.s.phase;
     if (ph.kind !== 'night' || ph.step !== 'confess') return '現在不能自首';
     if (ph.passed.includes(me.id)) return '你已經做過決定了';
+    if (tryalId === undefined) {
+      // William Phips: confess without revealing
+      if (usesLeft(this.s, me.id, 'phips') <= 0) return '請選自己一張未翻開的審判牌';
+      this.useAbility(me, 'phips');
+      ph.confessed.push(me.id);
+      ph.passed.push(me.id);
+      this.log(`${this.roleLabel(me.id, 'phips')} 選擇自首，不必翻牌`);
+      this.maybeResolveNight();
+      return;
+    }
     if (!me.tryals.some((t) => t.id === tryalId && !t.revealed)) return '請選自己一張未翻開的審判牌';
     ph.confessed.push(me.id);
     ph.passed.push(me.id);

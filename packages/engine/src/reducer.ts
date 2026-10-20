@@ -6,6 +6,7 @@ import type {
   ActionEnvelope,
   Card,
   CardType,
+  EventFx,
   GameEvent,
   GameState,
   LimitedAbility,
@@ -209,8 +210,8 @@ class Game {
 
   // ----- Basic tools -----
 
-  log(text: string, visibleTo?: PlayerId[]) {
-    this.events.push({ seq: ++this.s.seq, text, ...(visibleTo ? { visibleTo } : {}) });
+  log(text: string, visibleTo?: PlayerId[], fx?: EventFx[]) {
+    this.events.push({ seq: ++this.s.seq, text, ...(visibleTo ? { visibleTo } : {}), ...(fx ? { fx } : {}) });
   }
 
   p(id: PlayerId): Player {
@@ -229,7 +230,7 @@ class Game {
 
   /** "Name（角色）" for log lines about abilities */
   roleLabel(id: PlayerId, role: RoleId) {
-    return `${this.name(id)}（${ROLES[role].name}）`;
+    return `${this.name(id)}（${ROLES[role].title}）`;
   }
 
   useAbility(pl: Player, ability: LimitedAbility) {
@@ -351,7 +352,7 @@ class Game {
     if (ph.kind !== 'roles') return;
     for (const [pid, role] of Object.entries(ph.picks)) this.p(pid).role = role;
     this.log(
-      `角色公開：${this.s.seats.map((id) => `${this.name(id)}＝${ROLES[this.p(id).role!].name}`).join('、')}`,
+      `角色公開：${this.s.seats.map((id) => `${this.name(id)}＝${ROLES[this.p(id).role!].title}`).join('、')}`,
     );
     this.setPhase({ kind: 'dawn', votes: {} });
   }
@@ -424,7 +425,7 @@ class Game {
     else this.s.discard.push(...pl.hand);
     pl.hand = [];
     pl.front = [];
-    this.log(`${pl.name} 死亡（${cause}）。曾經是女巫：${pl.everWitch ? '是' : '否'}`);
+    this.log(`${pl.name} 死亡（${cause}）。曾經是女巫：${pl.everWitch ? '是' : '否'}`, undefined, [{ target: pid, label: '死亡' }]);
     // Rulebook: a matched partner dies a split-second later, so decide the win first
     if (this.checkWin()) return;
     if (partner) this.kill(partner, '情侶殉情');
@@ -460,7 +461,7 @@ class Game {
     const t = pl.tryals.find((x) => x.id === tryalId);
     if (!t || t.revealed) return;
     t.revealed = true;
-    this.log(`${pl.name} 的審判牌被翻開（${reason}）：${TRYAL_NAME[t.kind]}`);
+    this.log(`${pl.name} 的審判牌被翻開（${reason}）：${TRYAL_NAME[t.kind]}`, undefined, [{ target: pid, label: `翻開：${TRYAL_NAME[t.kind]}` }]);
     if (t.kind === 'witch') this.kill(pid, '揭露女巫牌');
     else if (unrevealed(pl).length === 0) this.kill(pid, '審判牌全部翻開');
     else this.checkWin();
@@ -667,7 +668,7 @@ class Game {
 
     // Will Griggs plays an Alibi as a Witness (a rejected play discards the cloned state, so marking early is safe)
     if (a.asWitness) {
-      if (card.type !== 'alibi' || !this.has(me.id, 'griggs')) return '只有 Will Griggs 能把辯護當作目擊';
+      if (card.type !== 'alibi' || !this.has(me.id, 'griggs')) return `只有${ROLES.griggs.title}能把辯護當作目擊`;
       card.as = 'witness';
     }
     const type = effectiveType(card);
@@ -699,15 +700,19 @@ class Game {
     this.s.turn.mode = 'playing';
     const label = `${me.name} 對 ${target.name} 打出「${CARD_NAME[card.type]}」${card.as ? `當作「${CARD_NAME[card.as]}」` : ''}`;
 
+    const hit = (label: string, who: PlayerId = target.id): EventFx => ({ target: who, label });
+
     if (isRed(type)) {
+      const before = accusationTotal(target, this.s);
       target.front.push(card);
-      this.log(`${label}（累計 ${accusationTotal(target, this.s)} 點）`);
+      const after = accusationTotal(target, this.s);
+      this.log(`${label}（累計 ${after} 點）`, undefined, [hit(`+${after - before} 指控`)]);
       this.checkAccusations(target, me.id);
       return;
     }
     if (isBlue(type)) {
       target.front.push(card);
-      this.log(label);
+      this.log(label, undefined, [hit(CARD_NAME[type])]);
       this.dedupeMatchmaker(target);
       return;
     }
@@ -728,21 +733,24 @@ class Game {
           const i = target.front.findIndex((c) => c.type === 'evidence');
           this.s.discard.push(...target.front.splice(i, 1));
         }
-        this.log(`${label}，移除部分指控（剩 ${accusationTotal(target, this.s)} 點）`);
+        this.log(`${label}，移除部分指控（剩 ${accusationTotal(target, this.s)} 點）`, undefined, [hit('辯護')]);
         break;
       }
       case 'arson':
         this.s.discard.push(...target.hand);
-        this.log(`${label}，燒掉 ${target.hand.length} 張手牌`);
+        this.log(`${label}，燒掉 ${target.hand.length} 張手牌`, undefined, [hit('手牌被燒')]);
         target.hand = [];
         break;
       case 'curse':
         target.front = target.front.filter((c) => c !== curseTarget);
         this.s.discard.push(curseTarget!);
-        this.log(`${label}，棄掉「${CARD_NAME[curseTarget!.type]}」`);
+        this.log(`${label}，棄掉「${CARD_NAME[curseTarget!.type]}」`, undefined, [hit(`失去${CARD_NAME[curseTarget!.type]}`)]);
         break;
       case 'robbery':
-        this.log(`${label}，${target.hand.length} 張手牌全部交給 ${second!.name}`);
+        this.log(`${label}，${target.hand.length} 張手牌全部交給 ${second!.name}`, undefined, [
+          hit('手牌被搶'),
+          hit(`+${target.hand.length} 張牌`, second!.id),
+        ]);
         second!.hand.push(...target.hand);
         target.hand = [];
         break;
@@ -750,7 +758,7 @@ class Game {
         const moved = target.front;
         target.front = [];
         second!.front.push(...moved);
-        this.log(`${label}，面前 ${moved.length} 張牌全部轉移給 ${second!.name}`);
+        this.log(`${label}，面前 ${moved.length} 張牌全部轉移給 ${second!.name}`, undefined, [hit('嫁禍出去'), hit('被嫁禍', second!.id)]);
         this.dedupeMatchmaker(second!);
         this.checkAccusations(second!, me.id);
         break;

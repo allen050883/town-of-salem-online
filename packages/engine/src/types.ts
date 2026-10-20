@@ -175,11 +175,18 @@ export interface ActionEnvelope {
   action: Action;
 }
 
+/** What happened to one player, for the client to highlight (e.g. "+1 指控") */
+export interface EventFx {
+  target: PlayerId;
+  label: string;
+}
+
 /** Log event; visibleTo omitted means public */
 export interface GameEvent {
   seq: number;
   text: string;
   visibleTo?: PlayerId[];
+  fx?: EventFx[];
 }
 
 export type ReduceResult =

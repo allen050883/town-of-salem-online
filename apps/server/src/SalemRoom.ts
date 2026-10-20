@@ -17,7 +17,7 @@ import {
   type PlayerId,
 } from '@salem/engine';
 import { CLOSE_REPLACED, RECONNECT_SECONDS } from './protocol';
-import type { ClientMessages, ClientSnapshot, JoinOptions, LogEntry, Member, ReplayRecord, RtcRelay } from './protocol';
+import type { ClientMessages, ClientSnapshot, JoinOptions, LogEntry, Member, ReplayRecord } from './protocol';
 import { saveReplay } from './replays';
 import { verifyToken, type AuthUser } from './auth';
 
@@ -66,6 +66,8 @@ export class SalemRoom extends Room {
   private game: GameState | null = null;
   private record: ReplayRecord | null = null;
   private lastReplayId: string | null = null;
+  /** Identifies the game in progress (same as its replay id) */
+  private gameId: string | null = null;
   private log: LogEntry[] = [];
   private logSeq = 0;
   private deadline: number | null = null;
@@ -74,7 +76,6 @@ export class SalemRoom extends Room {
   private hurried = false;
   private emptyTimer: { clear(): void } | null = null;
   private lastWords = new Map<PlayerId, number>();
-  private voice = new Set<PlayerId>();
   private botTimers = new Map<PlayerId, { clear(): void }>();
 
   onCreate() {
@@ -98,8 +99,6 @@ export class SalemRoom extends Room {
     on('seat', (client, msg) => this.handleSeat(client, !!msg?.spectate));
     on('addBots', (client, msg) => this.handleAddBots(client, msg?.count ?? 1));
     on('removeBot', (client, msg) => this.handleRemoveBot(client, String(msg?.id ?? '')));
-    on('voice', (client, msg) => this.handleVoice(client, !!msg?.on));
-    on('rtc', (client, msg) => this.handleRtc(client, msg));
     // Sent by the client once its handlers are registered, to fetch the current snapshot
     on('sync', (client) => this.sendSnapshot(client));
   }
@@ -168,7 +167,6 @@ export class SalemRoom extends Room {
     if (!pid) return;
     // If the member still has another live session (reconnected), skip this
     if ([...this.sessions.values()].includes(pid)) return;
-    this.voice.delete(pid);
 
     const spectator = this.spectators.find((x) => x.id === pid);
     if (spectator) {
@@ -308,8 +306,9 @@ export class SalemRoom extends Room {
     const seats = [...this.lobby].sort(() => Math.random() - 0.5).map((p) => ({ id: p.id, name: p.name }));
     const seed = Math.floor(Math.random() * 2 ** 31);
     this.game = createGame(seats, seed, this.options);
+    this.gameId = randomUUID();
     this.record = {
-      id: randomUUID(),
+      id: this.gameId,
       version: 1,
       roomCode: this.roomId,
       startedAt: Date.now(),
@@ -329,7 +328,7 @@ export class SalemRoom extends Room {
       this.pushLog({
         kind: 'event',
         channel: 'system',
-        text: `角色公開：${seats.map((s) => `${s.name}＝${ROLES[this.game!.players[s.id]!.role!].name}`).join('、')}`,
+        text: `角色公開：${seats.map((s) => `${s.name}＝${ROLES[this.game!.players[s.id]!.role!].title}`).join('、')}`,
       });
     }
     this.afterStateChange();
@@ -393,7 +392,7 @@ export class SalemRoom extends Room {
     }
     this.game = r.state;
     this.record?.actions.push({ actor, action, at: Date.now() - this.record.startedAt });
-    for (const e of r.events) this.pushLog({ kind: 'event', channel: 'public', text: e.text, to: e.visibleTo });
+    for (const e of r.events) this.pushLog({ kind: 'event', channel: 'public', text: e.text, to: e.visibleTo, fx: e.fx });
     for (const p of Object.values(this.game.players)) {
       if (!p.alive && !before.has(p.id)) this.lastWords.set(p.id, LAST_WORDS);
     }
@@ -470,26 +469,6 @@ export class SalemRoom extends Room {
     if (r) r.chat.push({ after: r.actions.length, at: Date.now() - r.startedAt, channel: e.channel, from: e.from, text: e.text });
   }
 
-  // ---------- Voice (WebRTC signaling relay) ----------
-
-  private handleVoice(client: Client, on: boolean) {
-    const pid = this.sessions.get(client.sessionId);
-    if (!pid) return;
-    if (on) this.voice.add(pid);
-    else this.voice.delete(pid);
-    this.broadcastSnapshots();
-  }
-
-  private handleRtc(client: Client, msg: ClientMessages['rtc']) {
-    const from = this.sessions.get(client.sessionId);
-    if (!from || !msg || typeof msg.to !== 'string' || !msg.data || typeof msg.data !== 'object') return;
-    if (!this.voice.has(from) || !this.voice.has(msg.to)) return;
-    const relay: RtcRelay = { from, data: msg.data };
-    for (const c of this.clients) {
-      if (this.sessions.get(c.sessionId) === msg.to) c.send('rtc', relay);
-    }
-  }
-
   // ---------- Timers and broadcasting ----------
 
   private afterStateChange() {
@@ -558,8 +537,8 @@ export class SalemRoom extends Room {
       log: this.log.filter((e) => !e.to || e.to.includes(pid)),
       deadline: this.deadline,
       lastWordsLeft: this.game?.players[pid]?.alive === false ? (this.lastWords.get(pid) ?? 0) : null,
-      voice: [...this.voice],
       lastReplayId: this.lastReplayId,
+      gameId: this.game ? this.gameId : null,
     };
     client.send('snapshot', snap);
   }

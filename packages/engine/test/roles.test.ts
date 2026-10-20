@@ -83,7 +83,7 @@ describe('accusation characters', () => {
     const t = scenario();
     const [al2] = give(t, 'A', 'alibi');
     t.players.C!.front.push(card('accusation'));
-    expect(fails(t, 'A', { type: 'PLAY_CARD', cardId: al2!.id, target: 'C', asWitness: true })).toMatch('Griggs');
+    expect(fails(t, 'A', { type: 'PLAY_CARD', cardId: al2!.id, target: 'C', asWitness: true })).toMatch('醫生');
   });
 
   it('Abigail Williams: her own red cards are discarded after a trial she started', () => {

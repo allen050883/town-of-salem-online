@@ -5,8 +5,7 @@ import { LogPanel } from './LogPanel';
 import { CardList, PlayerRow, RoleChip, isDark, phaseText } from './Table';
 import { CARD_W, CardFace } from './CardFace';
 import { CARD_DESC } from './text';
-import type { Voice } from './voice';
-import { VoiceControls } from './VoiceControls';
+import { EventTicker, IntroSheet, useHits } from './Feedback';
 
 interface Props {
   snap: ClientSnapshot;
@@ -15,7 +14,6 @@ interface Props {
   send: Send;
   error: string | null;
   connection: Connection;
-  voice: Voice;
   onLeave: () => void;
 }
 
@@ -30,7 +28,7 @@ const NONE: Selection = { card: null, first: null, asWitness: false };
 
 /** Hand card scale: half size on desktop, smaller on phones */
 const HAND_SCALE = 0.5;
-const HAND_SCALE_NARROW = 0.4;
+const HAND_SCALE_NARROW = 0.34;
 const HAND_GAP = 8;
 
 function useHandScale() {
@@ -76,7 +74,7 @@ function leftOf(view: PlayerView): PlayerId | null {
   return null;
 }
 
-export function Game({ snap, view, act, send, error, connection, voice, onLeave }: Props) {
+export function Game({ snap, view, act, send, error, connection, onLeave }: Props) {
   const [sel, setSel] = useState<Selection>(NONE);
   const [panel, setPanel] = useState<'none' | 'discard' | 'parris'>('none');
   const [logOpen, setLogOpen] = useState(false);
@@ -105,9 +103,9 @@ export function Game({ snap, view, act, send, error, connection, voice, onLeave 
 
   const isAlive = (id: PlayerId) => view.players[id]!.alive;
   const offline = new Set(snap.lobby.filter((p) => !p.connected).map((p) => p.id));
-  const voiceOn = new Set(snap.voice);
   const bots = new Set(snap.lobby.filter((p) => p.bot).map((p) => p.id));
   const pictures = new Map(snap.lobby.map((p) => [p.id, p.picture]));
+  const hits = useHits(snap.log);
 
   // ----- Which players / cards can be clicked right now -----
   function canTargetPlayer(id: PlayerId): boolean {
@@ -185,8 +183,10 @@ export function Game({ snap, view, act, send, error, connection, voice, onLeave 
         <button className="ghost small" onClick={() => setPanel(panel === 'discard' ? 'none' : 'discard')} aria-expanded={panel === 'discard'}>
           棄牌 {view.discardCount}
         </button>
-        <VoiceControls voice={voice} />
         <Countdown deadline={snap.deadline} />
+        <button className="ghost small log-toggle" onClick={() => setLogOpen(!logOpen)} aria-expanded={logOpen}>
+          {logOpen ? '牌桌' : '紀錄'}
+        </button>
         <button className="ghost small" onClick={onLeave}>
           離開
         </button>
@@ -199,6 +199,8 @@ export function Game({ snap, view, act, send, error, connection, voice, onLeave 
       )}
 
       <Prompt view={view} sel={sel} myTurn={myTurn} spectator={spectator} />
+      <EventTicker log={snap.log} onOpen={() => setLogOpen(true)} />
+      {!spectator && snap.gameId && ph.kind !== 'game_over' && <IntroSheet key={snap.gameId} gameId={snap.gameId} view={view} />}
 
       {panel === 'discard' && (
         <section className="panel" aria-label="棄牌堆">
@@ -229,10 +231,10 @@ export function Game({ snap, view, act, send, error, connection, voice, onLeave 
               onTryal={(t) => onTryal(id, t)}
               onFront={(c) => onFront(id, c)}
               offline={offline.has(id)}
-              voice={voiceOn.has(id)}
               bot={bots.has(id)}
               picture={pictures.get(id)}
               isLeft={showLeft && id === left}
+              hit={hits.get(id)}
             />
           ))}
         </section>
@@ -240,9 +242,6 @@ export function Game({ snap, view, act, send, error, connection, voice, onLeave 
       </div>
 
       <footer className="hand-bar">
-        <button className="ghost small log-toggle" onClick={() => setLogOpen(!logOpen)} aria-expanded={logOpen}>
-          {logOpen ? '看牌桌' : `紀錄與聊天`}
-        </button>
         {error && <p className="error">{error}</p>}
         {ph.kind === 'game_over' ? (
           <GameOver view={view} snap={snap} isHost={snap.hostId === view.me} onBack={() => send('backToLobby')} />
@@ -291,7 +290,7 @@ export function Game({ snap, view, act, send, error, connection, voice, onLeave 
                   {view.myAbilities.phips && (
                     <button
                       onClick={() => {
-                        if (window.confirm('使用 William Phips 的能力：自首但不翻牌（全場一次）？')) act({ type: 'CONFESS' });
+                        if (window.confirm(`使用${ROLES.phips.title}的能力：自首但不翻牌（全場一次）？`)) act({ type: 'CONFESS' });
                       }}
                     >
                       自首（不翻牌）
@@ -332,7 +331,7 @@ function Prompt({ view, sel, myTurn, spectator }: { view: PlayerView; sel: Selec
   else
     switch (ph.kind) {
       case 'roles':
-        text = ph.picked ? `你選了 ${ROLES[ph.picked].name}。${phaseText(view)}` : '選一位鎮公所角色。角色會公開給所有人。';
+        text = ph.picked ? `你選了 ${ROLES[ph.picked].title}。${phaseText(view)}` : '選一位鎮公所角色。角色會公開給所有人。';
         break;
       case 'dawn':
         text = ph.mustAct ? '黎明。你是女巫：點一位玩家，把黑貓放到他面前（可以是你自己）。' : '黎明。所有人閉上眼睛，女巫正在放黑貓…';
@@ -356,7 +355,7 @@ function Prompt({ view, sel, myTurn, spectator }: { view: PlayerView; sel: Selec
         text = ph.deck ? '你查看了牌堆：用上下按鈕排好順序（最上面先抽），完成後會抽兩張牌。' : phaseText(view);
         break;
       case 'salvage':
-        text = ph.cards ? `John Proctor：從 ${name(ph.from)} 留下的手牌中挑最多 ${SALVAGE_MAX} 張收下。` : phaseText(view);
+        text = ph.cards ? `${ROLES.proctor.title}：從${name(ph.from)} 留下的手牌中挑最多 ${SALVAGE_MAX} 張收下。` : phaseText(view);
         break;
       case 'night':
         if (ph.step === 'witches')
@@ -410,8 +409,7 @@ function RolePicker({ view, act }: { view: PlayerView; act: (a: Action) => void 
       <div className="role-offers">
         {ph.offers.map((r) => (
           <button key={r} className="role-card" onClick={() => act({ type: 'PICK_ROLE', role: r })}>
-            <b>{ROLES[r].name}</b>
-            <span className="muted">{ROLES[r].title}</span>
+            <b>{ROLES[r].title}</b>
             <span>{ROLES[r].desc}</span>
           </button>
         ))}
@@ -486,7 +484,7 @@ function ParrisPicker({ discard, act, onCancel }: { discard: Card[]; act: (a: Ac
   return (
     <section className="panel" aria-label="從棄牌堆拿牌">
       <h2>
-        Samuel Parris：從棄牌堆選最多 {PARRIS_MAX} 張（取代這回合抽牌）
+        {ROLES.parris.title}：從棄牌堆選最多 {PARRIS_MAX} 張（取代這回合抽牌）
       </h2>
       <CardList cards={usable} picked={picked} onToggle={toggle} />
       <div className="turn-actions">

@@ -1,5 +1,5 @@
 /** Messages and payloads shared by the server and the web client (type-only imports on the client) */
-import type { Action, ActionEnvelope, GameOptions, PlayerId, PlayerView, SeatInput, Winner } from '@salem/engine';
+import type { Action, ActionEnvelope, EventFx, GameOptions, PlayerId, PlayerView, SeatInput, Winner } from '@salem/engine';
 
 export type Channel = 'public' | 'witch' | 'dead' | 'spectator' | 'system';
 
@@ -12,6 +12,8 @@ export interface LogEntry {
   text: string;
   /** Visible to; omitted means everyone */
   to?: PlayerId[];
+  /** Players this event happened to, for the client to highlight */
+  fx?: EventFx[];
 }
 
 export interface Member {
@@ -40,10 +42,10 @@ export interface ClientSnapshot {
   deadline: number | null;
   /** Dead players' remaining last words */
   lastWordsLeft: number | null;
-  /** Members with voice chat turned on */
-  voice: PlayerId[];
   /** The last finished game in this room, viewable as a replay */
   lastReplayId: string | null;
+  /** The game in progress, null in the lobby */
+  gameId: string | null;
 }
 
 /** Close code sent to a session replaced by the same member joining from another tab */
@@ -56,17 +58,6 @@ export interface JoinOptions {
   token?: string;
   /** Join as a spectator even if a seat is free */
   spectate?: boolean;
-}
-
-/** WebRTC signaling, relayed by the server between two members of the room */
-export interface RtcSignal {
-  to: PlayerId;
-  /** An SDP offer/answer or an ICE candidate, passed through untouched (DOM types aren't available on the server) */
-  data: { sdp?: { type: 'offer' | 'answer'; sdp?: string }; candidate?: Record<string, unknown> };
-}
-export interface RtcRelay {
-  from: PlayerId;
-  data: RtcSignal['data'];
 }
 
 /** Client → server messages */
@@ -82,8 +73,6 @@ export interface ClientMessages {
   /** Host only, in the lobby: add computer players / remove one */
   addBots: { count: number };
   removeBot: { id: PlayerId };
-  voice: { on: boolean };
-  rtc: RtcSignal;
 }
 
 /** A finished game: replayed by running the same actions through the engine */

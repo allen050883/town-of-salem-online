@@ -86,8 +86,6 @@ export function useSalem() {
   const tokenRef = useRef(token);
   tokenRef.current = token;
   const roomRef = useRef<Room | null>(null);
-  /** Listeners for relayed WebRTC signals (voice chat) */
-  const rtcListeners = useRef(new Set<(m: unknown) => void>());
 
   const join = useCallback(async (mode: 'create' | 'join', code?: string, spectate = false) => {
     if (!tokenRef.current) throw new Error('請先用 LINE 登入');
@@ -112,7 +110,6 @@ export function useSalem() {
     setConnection('online');
     room.onMessage('snapshot', (s: ClientSnapshot) => setSnap(s));
     room.onMessage('error', (e: { message: string }) => setError(e.message));
-    room.onMessage('rtc', (m: unknown) => rtcListeners.current.forEach((fn) => fn(m)));
     // Short drops: the SDK resumes the same session by itself
     room.onDrop(() => roomRef.current === room && setConnection('reconnecting'));
     room.onReconnect(() => {
@@ -200,17 +197,12 @@ export function useSalem() {
   }, []);
 
   const send: Send = useCallback((type, ...payload) => {
-    if (type !== 'rtc') setError(null);
+    setError(null);
     roomRef.current?.send(type, payload[0]);
   }, []);
 
   const act = useCallback((a: Action) => send('action', a), [send]);
   const setOptions = useCallback((o: Partial<GameOptions>) => send('options', o), [send]);
-
-  const onRtc = useCallback((fn: (m: unknown) => void) => {
-    rtcListeners.current.add(fn);
-    return () => void rtcListeners.current.delete(fn);
-  }, []);
 
   return {
     snap,
@@ -224,7 +216,6 @@ export function useSalem() {
     send,
     act,
     setOptions,
-    onRtc,
     clearError: () => setError(null),
   };
 }

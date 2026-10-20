@@ -3,6 +3,7 @@ import { CARD_COLOR, CARD_NAME, ROLES, type Card, type PlayerId, type PlayerView
 import { CARD_DESC, TRYAL_FULL, TRYAL_LABEL } from './text';
 import { Avatar } from './Avatar';
 import { CardFace } from './CardFace';
+import type { Hit } from './Feedback';
 
 /** A character name that reveals its ability on hover or tap (tap matters on phones, where title tooltips don't exist) */
 export function RoleChip({ role, copying, mine }: { role: RoleId; copying?: RoleId | null; mine?: boolean }) {
@@ -19,21 +20,19 @@ export function RoleChip({ role, copying, mine }: { role: RoleId; copying?: Role
           setOpen(!open);
         }}
         aria-expanded={open}
-        title={`${r.name}（${r.title}）：${r.desc}${copied ? `\n目前複製：${copied.name}（${copied.desc}）` : ''}`}
+        title={`${r.title}：${r.desc}${copied ? `\n目前複製：${copied.title}（${copied.desc}）` : ''}`}
       >
-        {r.name}
-        {copied && <span className="copying">→ {copied.name}</span>}
+        {r.title}
+        {copied && <span className="copying">→ {copied.title}</span>}
       </button>
       {open && (
         <span className="role-pop" role="note">
-          <b>
-            {r.name}（{r.title}）
-          </b>
+          <b>{r.title}</b>
           {r.desc}
           {copied && (
             <>
               <br />
-              目前複製 {copied.name}：{copied.desc}
+              目前複製 {copied.title}：{copied.desc}
             </>
           )}
         </span>
@@ -53,12 +52,13 @@ export interface RowProps {
   onTryal: (id: string) => void;
   onFront: (c: Card) => void;
   offline?: boolean;
-  voice?: boolean;
   bot?: boolean;
   /** LINE profile picture */
   picture?: string;
   /** During a conspiracy: this is the player on the viewer's left */
   isLeft?: boolean;
+  /** Something just happened to this player: light the row and float the label */
+  hit?: Hit;
 }
 
 export function PlayerRow(props: RowProps) {
@@ -66,7 +66,7 @@ export function PlayerRow(props: RowProps) {
   const isTurn = view.phase.kind === 'turn' && view.turn.player === p.id;
   const isMe = p.id === view.me;
   const waiting = p.alive && view.waiting.includes(p.id) && !isTurn;
-  const filled = Math.min(p.accusations, p.threshold);
+  const filled = Math.min(p.accusations, p.threshold) / p.threshold;
 
   return (
     <article
@@ -78,13 +78,14 @@ export function PlayerRow(props: RowProps) {
         targetable && 'is-targetable',
         props.selectedFirst && 'is-first',
         props.isLeft && 'is-left',
+        props.hit && 'is-hit',
       ]
         .filter(Boolean)
         .join(' ')}
     >
       <div className="pew-head">
         <button className="pew-name" onClick={props.onPlayer} disabled={!targetable} aria-label={`選擇 ${p.name}`}>
-          <Avatar name={p.name} picture={props.picture} size={28} />
+          <Avatar name={p.name} picture={props.picture} size={24} />
           <span className="name">{p.name}</span>
         </button>
         <span className="pew-tags">
@@ -94,12 +95,11 @@ export function PlayerRow(props: RowProps) {
           {props.offline && <span className="tag offline">離線</span>}
           {props.bot && <span className="tag">電腦</span>}
           {props.isLeft && <span className="tag left">你的左手邊</span>}
-          {props.voice && <span className="tag">語音</span>}
           {waiting && <span className="tag thinking">行動中</span>}
         </span>
         {p.role && <RoleChip role={p.role} copying={p.effectiveRole} mine={isMe} />}
-        <span className="hand-count" title="手牌數">
-          手牌 {p.handCount}
+        <span className="hand-count" title="手牌數" aria-label={`手牌 ${p.handCount} 張`}>
+          手牌 <b>{p.handCount}</b>
         </span>
       </div>
 
@@ -119,10 +119,13 @@ export function PlayerRow(props: RowProps) {
       </div>
 
       <div className="accuse" title={`指控 ${p.accusations} / ${p.threshold}`} aria-label={`指控 ${p.accusations} / ${p.threshold} 點`}>
-        {Array.from({ length: p.threshold }, (_, i) => (
-          <span key={i} className={i < filled ? 'pip on' : 'pip'} />
-        ))}
-        {p.accusations > 0 && <span className="accuse-num">{p.accusations}</span>}
+        <span className="accuse-label">指控</span>
+        <span className="accuse-bar">
+          <span style={{ width: `${filled * 100}%` }} />
+        </span>
+        <span className="accuse-num">
+          {p.accusations}/{p.threshold}
+        </span>
       </div>
 
       {p.front.some((c) => CARD_COLOR[c.type] !== 'red') && (
@@ -142,12 +145,21 @@ export function PlayerRow(props: RowProps) {
             ))}
         </div>
       )}
+
+      {props.hit && (
+        <>
+          <span key={`glow-${props.hit.key}`} className="hit-glow" aria-hidden="true" />
+          <span key={props.hit.key} className="hit-float" aria-hidden="true">
+            {props.hit.label}
+          </span>
+        </>
+      )}
     </article>
   );
 }
 
 /** Read-only rows (replays, spectators before interaction is wired) */
-export function StaticTown({ view, offline, voice }: { view: PlayerView; offline?: Set<PlayerId>; voice?: Set<PlayerId> }) {
+export function StaticTown({ view, offline }: { view: PlayerView; offline?: Set<PlayerId> }) {
   return (
     <section className="town" aria-label="鎮民">
       {view.seats.map((id) => (
@@ -163,7 +175,6 @@ export function StaticTown({ view, offline, voice }: { view: PlayerView; offline
           onTryal={() => {}}
           onFront={() => {}}
           offline={offline?.has(id)}
-          voice={voice?.has(id)}
         />
       ))}
     </section>
@@ -185,9 +196,9 @@ export function phaseText(view: PlayerView): string {
       if (ph.then === 'conspiracy_pass') return `傳染！黑貓在 ${name(ph.target)} 面前，他正在選一張自己的審判牌翻開…`;
       return `${name(ph.chooser)} 正在翻開 ${name(ph.target)} 的一張審判牌…`;
     case 'arrange':
-      return `${name(ph.player)}（Tituba）正在查看並重排牌堆…`;
+      return `${name(ph.player)}（${ROLES.tituba.title}）正在查看並重排牌堆…`;
     case 'salvage':
-      return `${name(ph.chooser)}（John Proctor）正在挑選 ${name(ph.from)} 留下的 ${ph.count} 張手牌…`;
+      return `${name(ph.chooser)}（${ROLES.proctor.title}）正在挑選 ${name(ph.from)} 留下的 ${ph.count} 張手牌…`;
     case 'night':
       if (ph.step === 'witches') return ph.victim || ph.votes ? `女巫正在投票（目前目標：${ph.victim ? name(ph.victim) : '未定'}）` : '夜晚。所有人閉上眼睛…';
       if (ph.step === 'constable') return ph.gavel !== null ? `警長把法槌交給 ${name(ph.gavel)}` : '夜晚。警長正在行動…';

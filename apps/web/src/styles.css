@@ -893,3 +893,14 @@ button.small {
   position: relative;
   z-index: 2;
 }
+
+/* Conspiracy: label and outline the player on your left */
+.tag.left {
+  border-color: var(--wax);
+  color: var(--ink);
+  font-weight: 700;
+}
+.pew.is-left {
+  box-shadow: inset 0 0 0 2px var(--wax);
+  border-radius: 4px;
+}

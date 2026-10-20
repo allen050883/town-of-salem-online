@@ -514,7 +514,8 @@ class Game {
     this.log(`${this.name(this.s.turn.player)} 抽到「傳染」！`);
     const cat = blackCatHolder(this.s);
     if (cat && unrevealed(cat).length > 0) {
-      this.setPhase({ kind: 'reveal', chooser: this.s.turn.player, target: cat.id, then: 'conspiracy_pass' });
+      // The black cat holder chooses which of their own tryal cards to reveal
+      this.setPhase({ kind: 'reveal', chooser: cat.id, target: cat.id, then: 'conspiracy_pass' });
     } else {
       this.startConspiracyPass();
     }

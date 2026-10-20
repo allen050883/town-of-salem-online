@@ -32,7 +32,7 @@ export interface PublicPlayer {
 export type PhaseView =
   | { kind: 'dawn'; mustAct: boolean; votes: Record<PlayerId, PlayerId> | null }
   | { kind: 'turn' }
-  | { kind: 'reveal'; chooser: PlayerId; target: PlayerId; /** resume: accusation trial; conspiracy_pass: conspiracy reveals the black cat holder */ then: 'resume' | 'conspiracy_pass' }
+  | { kind: 'reveal'; chooser: PlayerId; target: PlayerId; /** resume: accusation trial; conspiracy_pass: the black cat holder reveals one of their own tryal cards */ then: 'resume' | 'conspiracy_pass' }
   | {
       kind: 'night';
       step: 'witches' | 'constable' | 'confess';

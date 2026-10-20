@@ -24,6 +24,17 @@ function useHandScale() {
 
 const HAND_GAP = 8;
 
+/** The next living player in seat order (clockwise), matching the engine's nextAlive: the player on your left */
+function leftOf(view: PlayerView): PlayerId | null {
+  const n = view.seats.length;
+  const start = view.seats.indexOf(view.me);
+  for (let i = 1; i < n; i++) {
+    const id = view.seats[(start + i) % n]!;
+    if (view.players[id]!.alive) return id;
+  }
+  return null;
+}
+
 /** When the hand doesn't fit on one row, compute how much each card should overlap the previous one (negative px); 0 when it fits */
 function useHandOverlap(count: number, cardWidth: number) {
   const ref = useRef<HTMLDivElement>(null);
@@ -65,6 +76,9 @@ export function Game({ snap, view, act, send, error, onLeave }: Props) {
   const hand = useHandOverlap(view.myHand.length, CARD_W * handScale);
   const ph = view.phase;
   const me = view.players[view.me]!;
+  // Conspiracy: everyone takes a card from the player on their left, so label that player (from the reveal step on)
+  const left = leftOf(view);
+  const showLeft = me.alive && (ph.kind === 'conspiracy' || (ph.kind === 'reveal' && ph.then === 'conspiracy_pass'));
   const myTurn = ph.kind === 'turn' && view.turn.player === view.me && me.alive;
   const dark = ph.kind === 'dawn' || (ph.kind === 'night' && ph.step !== 'confess');
 
@@ -167,6 +181,7 @@ export function Game({ snap, view, act, send, error, onLeave }: Props) {
               view={view}
               targetable={canTargetPlayer(id)}
               selectedFirst={sel.first === id}
+              isLeft={showLeft && id === left}
               tryalPickable={canPickTryal(id)}
               frontPickable={(c) => canPickFront(id, c)}
               onPlayer={() => onPlayer(id)}
@@ -239,6 +254,8 @@ function PlayerRow(props: {
   p: PublicPlayer;
   picture?: string;
   bot: boolean;
+  /** During a conspiracy: this is the player on the viewer's left */
+  isLeft: boolean;
   view: PlayerView;
   targetable: boolean;
   selectedFirst: boolean;
@@ -262,6 +279,7 @@ function PlayerRow(props: {
         isMe && 'is-me',
         targetable && 'is-targetable',
         props.selectedFirst && 'is-first',
+        props.isLeft && 'is-left',
       ]
         .filter(Boolean)
         .join(' ')}
@@ -271,6 +289,7 @@ function PlayerRow(props: {
         <span className="name">{p.name}</span>
         {isMe && <span className="tag">你</span>}
         {props.bot && <span className="tag">電腦</span>}
+        {props.isLeft && <span className="tag left">你的左手邊</span>}
         {p.isWitch && p.alive && !isMe && <span className="tag witch">女巫同伴</span>}
         {!p.alive && <span className="tag">{p.isWitch ? '已死・女巫' : '已死'}</span>}
         <span className="hand-count" title="手牌數">
@@ -341,10 +360,16 @@ function Prompt({ view, sel, myTurn }: { view: PlayerView; sel: Selection; myTur
         else text = '輪到你了：抽兩張牌，或選一張手牌打給別人。';
         break;
       case 'reveal':
-        text =
-          ph.chooser === view.me
-            ? `審判 ${name(ph.target)}：點他的一張審判牌翻開。`
-            : `${name(ph.chooser)} 正在翻開 ${name(ph.target)} 的一張審判牌…`;
+        if (ph.then === 'conspiracy_pass')
+          text =
+            ph.chooser === view.me
+              ? '傳染！黑貓在你面前：點你自己的一張審判牌翻開。'
+              : `傳染！黑貓在 ${name(ph.target)} 面前，他正在選一張自己的審判牌翻開…`;
+        else
+          text =
+            ph.chooser === view.me
+              ? `審判 ${name(ph.target)}：點他的一張審判牌翻開。`
+              : `${name(ph.chooser)} 正在翻開 ${name(ph.target)} 的一張審判牌…`;
         break;
       case 'night':
         if (ph.step === 'witches')

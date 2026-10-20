@@ -202,6 +202,36 @@ describe('conspiracy', () => {
   });
 });
 
+describe('conspiracy: black cat reveal', () => {
+  it('the black cat holder, not the player who drew it, chooses which of their own cards to reveal', () => {
+    let s = scenario();
+    // Move the black cat from A to C; A is still the one drawing
+    const cat = s.players.A!.front.find((c) => c.type === 'black_cat')!;
+    s.players.A!.front = s.players.A!.front.filter((c) => c !== cat);
+    s.players.C!.front.push(cat);
+    s.deck = [card('conspiracy'), card('accusation'), card('night')];
+    s = must(s, 'A', { type: 'DRAW' });
+    expect(s.phase).toMatchObject({ kind: 'reveal', chooser: 'C', target: 'C', then: 'conspiracy_pass' });
+    // The drawer can no longer choose; only C can
+    expect(fails(s, 'A', { type: 'CHOOSE_REVEAL', tryalId: 'C-t0' })).toBeTruthy();
+    s = must(s, 'C', { type: 'CHOOSE_REVEAL', tryalId: 'C-t2' });
+    expect(s.players.C!.tryals[2]!.revealed).toBe(true);
+    expect(s.phase.kind).toBe('conspiracy');
+  });
+
+  it('on timeout the black cat holder\'s own card is revealed at random', () => {
+    let s = scenario();
+    const cat = s.players.A!.front.find((c) => c.type === 'black_cat')!;
+    s.players.A!.front = s.players.A!.front.filter((c) => c !== cat);
+    s.players.D!.front.push(cat);
+    s.deck = [card('conspiracy'), card('accusation'), card('night')];
+    s = must(s, 'A', { type: 'DRAW' });
+    s = must(s, 'system', { type: 'TIMEOUT' });
+    expect(s.players.D!.tryals.filter((t) => t.revealed)).toHaveLength(1);
+    expect(s.phase.kind).toBe('conspiracy');
+  });
+});
+
 describe('endgame', () => {
   it('when only 2 players are left, blue cards are removed and Scapegoat cannot be played', () => {
     let s = scenario();

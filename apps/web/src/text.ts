@@ -13,7 +13,7 @@ export const CARD_DESC: Record<CardType, string> = {
   matchmaker: '情侶：兩張分別放在兩人面前後，一人死亡另一人也會死。',
   asylum: '避難：持有者在夜晚不會被女巫殺死。',
   piety: '信徒：其他人不能對持有者打紅牌。',
-  black_cat: '黑貓：抽到傳染時，持有者會先被翻開一張審判牌。',
+  black_cat: '黑貓：抽到傳染時，持有者要先翻開自己的一張審判牌。',
   night: '夜晚降臨。',
   conspiracy: '傳染：每人從左手邊玩家拿走一張審判牌。',
 };

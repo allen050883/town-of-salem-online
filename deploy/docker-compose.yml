@@ -1,8 +1,7 @@
-# For the NAS: game server + Cloudflare Tunnel
-# - Uses no NAS host ports; the two containers talk only on their own network, so they won't collide with other services
-# - In the Cloudflare Tunnel public hostname, set the service to http://salem:2567
+# For the NAS, deployed by .github/workflows/deploy.yml (self-hosted runner on the NAS).
+# The runner sets TAG and HOST_DATA_PATH; both have defaults for a manual run.
 #
-# Usage (in this folder on the NAS):
+# Manual usage (in this folder on the NAS):
 #   1. cp salem.env.example salem.env and fill it in
 #   2. docker compose up -d --build
 
@@ -13,35 +12,24 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: salem-server:latest
+    image: salem-server:${TAG:-latest}
+    container_name: salem
     restart: unless-stopped
     env_file: salem.env
     environment:
+      TZ: Asia/Taipei
       NODE_ENV: production
       PORT: '2567'
-    networks: [salem]
-    # Replays of finished games; without this volume they disappear when the container is recreated
     volumes:
-      - salem-data:/app/data
+      # Replays of finished games. Bind-mounted from the NAS host so they survive
+      # rebuilds; the directory must be writable by uid 1000 (the workflow does this).
+      - ${HOST_DATA_PATH:-./data}:/app/data
+    ports:
+      # Published on a real host port: the NAS's shared cloudflared tunnel reaches
+      # every tunneled service by NAS address:PORT. Add a Public Hostname in that
+      # tunnel pointing at http://<NAS LAN IP>:25670 (no cloudflared service here).
+      - '25670:2567'
     # Keep resources small so other NAS services aren't affected
     mem_limit: 256m
     cpus: 0.5
-    # To reach it directly on the LAN (e.g. an existing reverse proxy), uncomment and pick an unused port:
-    # ports:
-    #   - '25670:2567'
-
-  cloudflared:
-    image: cloudflare/cloudflared:2025.10.0
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run
-    environment:
-      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?Put the tunnel token from the Cloudflare dashboard in TUNNEL_TOKEN in deploy/.env}
-    networks: [salem]
-    depends_on: [salem]
-    mem_limit: 128m
-
-networks:
-  salem:
-
-volumes:
-  salem-data:
+    stop_grace_period: 15s

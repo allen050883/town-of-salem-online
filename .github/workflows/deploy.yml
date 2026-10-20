@@ -1,0 +1,67 @@
+name: Deploy to NAS
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "README.md"
+      - "docs/**"
+      - "apps/web/**" # the frontend is deployed by Cloudflare Pages, not this image
+  workflow_dispatch: {}
+
+# One deploy at a time on the NAS's runner; queue rather than cancel so a
+# `docker build` / `docker compose up` never gets interrupted mid-way.
+concurrency:
+  group: deploy-nas-salem
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore deploy/salem.env from secret
+        env:
+          SALEM_ENV_FILE: ${{ secrets.SALEM_ENV_FILE }}
+        run: |
+          if [ -z "$SALEM_ENV_FILE" ]; then
+            echo "::error::Repo secret SALEM_ENV_FILE is not set. Add it under Settings -> Secrets and variables -> Actions, with the same content as deploy/salem.env (LINE_CHANNEL_ID / LINE_CHANNEL_SECRET / PUBLIC_URL / WEB_ORIGINS / AUTH_SECRET)."
+            exit 1
+          fi
+          printf '%s\n' "$SALEM_ENV_FILE" > deploy/salem.env
+          echo "✅ deploy/salem.env restored from secret"
+
+      - name: Set deploy variables
+        # Written to $GITHUB_ENV so later steps (compose interpolation) see them;
+        # `export` inside one step's `run:` would not carry over.
+        run: |
+          echo "TAG=$(date +%Y%m%d%H%M%S)" >> "$GITHUB_ENV"
+          echo "HOST_DATA_PATH=/volume1/docker/salem/data" >> "$GITHUB_ENV"
+
+      - name: Deploy with Docker Compose
+        working-directory: deploy
+        run: |
+          set -e
+          # The runner talks to the NAS host's dockerd over docker.sock (Docker
+          # outside of Docker), so a plain `mkdir` here would only create the
+          # directory inside the runner container. Borrow a throwaway container
+          # that bind-mounts /volume1/docker at the same path so it lands on the
+          # real host. The game server runs as uid 1000 (node), so hand it over.
+          docker run --rm -v /volume1/docker:/volume1/docker alpine \
+            sh -c "mkdir -p '$HOST_DATA_PATH/replays' && chown -R 1000:1000 '$HOST_DATA_PATH'"
+          echo "📂 $HOST_DATA_PATH ensured on the NAS host."
+
+          docker compose build --no-cache
+          docker compose down
+          docker compose up -d
+          echo "✅ Deployed salem-server:$TAG"
+
+      - name: Prune old images
+        run: docker image prune -f
+
+      - name: Verify container is running
+        working-directory: deploy
+        run: docker compose ps

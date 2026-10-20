@@ -1028,6 +1028,10 @@ button.small {
   grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
   gap: 1.25rem 1rem;
 }
+.gallery-note {
+  margin-left: 0.75rem;
+  font: 400 0.8rem var(--sans);
+}
 .gallery-row {
   display: flex;
   flex-wrap: wrap;

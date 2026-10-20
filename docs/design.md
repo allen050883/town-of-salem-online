@@ -75,10 +75,11 @@ repo `town-of-salem-online` 目前只有 LICENSE 和 README。目標是做桌遊
 
 ## 三、已確認的決定
 - 目標遊戲：Salem 1692 卡牌遊戲（不是 Town of Salem 線上遊戲）。
-- 對象：朋友私人房間，用房號加入，不需帳號。著作權風險低，但美術用佔位圖，不使用原版素材。
+- 對象：朋友私人房間，用房號加入，所有玩家用 LINE 登入（名稱與頭像取自 LINE）。卡牌插畫是用 Claude Design 另外設計的原創畫面，不使用原版桌遊的素材。
 - 技術：TypeScript monorepo（pnpm workspaces）+ Colyseus + React（Vite）。
 - 卡牌規則採第 5 版（信徒＝不能被放紅牌）。
-- MVP 不含鎮公所角色。引擎先預留掛鉤介面（`onAccuse`、`onDeath`、`modifyAccusationValue` 等），第二階段再加。
+- 鎮公所角色已在第二階段完成（見下方「第二、三階段的實作決定」）。
+- 傳染：由**黑貓持有者自己選**一張審判牌翻開（繁中版卡面的寫法；第 5 版規則書是由抽到傳染的人選）。審判牌的「非女巫」中文名稱統一為「平民」。
 
 ## 四、MVP 目錄結構
 ```

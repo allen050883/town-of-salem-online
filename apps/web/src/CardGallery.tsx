@@ -1,114 +1,49 @@
-import { ACCUSATION_THRESHOLD, CARD_COLOR, CARD_NAME, type CardType, type TryalKind } from '@salem/engine';
-import { CARD_DESC, TRYAL_FULL, TRYAL_LABEL } from './text';
+import type { CardType, TryalKind } from '@salem/engine';
+import { CardFace } from './CardFace';
 
-/** Dev-only: card gallery (http://localhost:5173/?preview=cards) */
+/** Dev-only: every illustrated card in day and night themes (http://localhost:5173/?preview=cards) */
 
-const HAND: CardType[] = ['accusation', 'evidence', 'witness', 'alibi', 'arson', 'curse', 'robbery', 'scapegoat', 'stocks', 'matchmaker', 'asylum', 'piety', 'black_cat'];
-const BLACK: CardType[] = ['night', 'conspiracy'];
-const KINDS: TryalKind[] = ['witch', 'constable', 'not_a_witch'];
+const GROUPS: { title: string; note: string; kinds: (CardType | TryalKind)[] }[] = [
+  { title: '紅牌', note: '指控：累積 7 點就審判', kinds: ['accusation', 'evidence', 'witness'] },
+  { title: '綠牌', note: '一次性效果，用完棄掉', kinds: ['alibi', 'arson', 'curse', 'robbery', 'scapegoat'] },
+  { title: '藍牌', note: '持續效果，留在玩家面前', kinds: ['stocks', 'matchmaker', 'asylum', 'piety', 'black_cat'] },
+  { title: '黑牌', note: '事件：抽到立即發動', kinds: ['night', 'conspiracy'] },
+  { title: '審判牌', note: '決定身分（牌桌上以小張字卡呈現）', kinds: ['witch', 'constable', 'not_a_witch'] },
+];
 
 function Section({ night }: { night: boolean }) {
   return (
     <div className={`game gallery ${night ? 'is-night' : ''}`}>
       <h2 className="gallery-h">{night ? '夜晚' : '白天'}</h2>
-
-      <h3>手牌</h3>
-      <div className="gallery-grid">
-        {HAND.map((t) => (
-          <figure key={t}>
-            <button className={`card c-${CARD_COLOR[t]}`}>{CARD_NAME[t]}</button>
-            <figcaption>{CARD_DESC[t]}</figcaption>
-          </figure>
-        ))}
-      </div>
-
-      <h3>手牌狀態</h3>
-      <div className="hand">
-        <figure>
-          <button className="card c-red">指控</button>
-          <figcaption>一般</figcaption>
-        </figure>
-        <figure>
-          <button className="card c-red is-selected">指控</button>
-          <figcaption>已選取</figcaption>
-        </figure>
-        <figure>
-          <button className="card c-red" disabled>
-            指控
-          </button>
-          <figcaption>不能出牌時</figcaption>
-        </figure>
-      </div>
-
-      <h3>黑牌（抽到立即發動，不會進手牌）</h3>
-      <div className="hand">
-        {BLACK.map((t) => (
-          <figure key={t}>
-            <button className={`card c-${CARD_COLOR[t]}`}>{CARD_NAME[t]}</button>
-            <figcaption>{CARD_DESC[t]}</figcaption>
-          </figure>
-        ))}
-      </div>
-
-      <h3>審判牌</h3>
-      <div className="gallery-row">
-        <figure>
-          <div className="tryals">
-            <button className="tryal k-hidden" disabled />
+      {GROUPS.map((g) => (
+        <section key={g.title}>
+          <h3>
+            {g.title}
+            <span className="gallery-note">{g.note}</span>
+          </h3>
+          <div className="gallery-row">
+            {g.kinds.map((k) => (
+              <figure key={k}>
+                <CardFace kind={k} />
+                <figcaption>完整尺寸</figcaption>
+              </figure>
+            ))}
           </div>
-          <figcaption>別人的，未翻開</figcaption>
-        </figure>
-        {KINDS.map((k) => (
-          <figure key={`mine-${k}`}>
-            <div className="tryals">
-              <button className={`tryal k-${k}`} disabled>
-                {TRYAL_LABEL[k]}
-              </button>
-            </div>
-            <figcaption>自己的{TRYAL_FULL[k]}（只有你看得到）</figcaption>
-          </figure>
-        ))}
-        {KINDS.map((k) => (
-          <figure key={`rev-${k}`}>
-            <div className="tryals">
-              <button className={`tryal is-revealed k-${k}`} disabled>
-                {TRYAL_LABEL[k]}
-              </button>
-            </div>
-            <figcaption>已翻開：{TRYAL_FULL[k]}</figcaption>
-          </figure>
-        ))}
-        <figure>
-          <div className="tryals">
-            <button className="tryal k-hidden is-pickable" />
-          </div>
-          <figcaption>可以點選（審判／傳染時）</figcaption>
-        </figure>
-      </div>
-
-      <h3>放在玩家面前的藍牌</h3>
-      <div className="front">
-        {(['stocks', 'matchmaker', 'asylum', 'piety', 'black_cat'] as CardType[]).map((t) => (
-          <button key={t} className={`chip c-${CARD_COLOR[t]}`} disabled>
-            {CARD_NAME[t]}
-          </button>
-        ))}
-        <button className="chip c-blue is-pickable">詛咒可選取</button>
-      </div>
-
-      <h3>指控點數</h3>
-      <div className="gallery-row">
-        {[0, 3, 6, 7].map((n) => (
-          <figure key={n}>
-            <div className="accuse">
-              {Array.from({ length: ACCUSATION_THRESHOLD }, (_, i) => (
-                <span key={i} className={i < n ? 'pip on' : 'pip'} />
-              ))}
-            </div>
-            <figcaption>{n} 點</figcaption>
-          </figure>
-        ))}
-      </div>
+        </section>
+      ))}
+      <section>
+        <h3>
+          手牌尺寸
+          <span className="gallery-note">手牌以半尺寸顯示，只保留插畫、卡名和點數</span>
+        </h3>
+        <div className="gallery-row">
+          {GROUPS.slice(0, 4)
+            .flatMap((g) => g.kinds)
+            .map((k) => (
+              <CardFace key={k} kind={k} scale={0.5} compact />
+            ))}
+        </div>
+      </section>
     </div>
   );
 }

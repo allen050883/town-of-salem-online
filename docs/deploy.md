@@ -46,6 +46,8 @@ docker compose ps                  # salem 應該顯示 healthy
 
 驗證：瀏覽器開 `https://api.salem.example.com/auth/config`，應該看到 `{"line":true,"dev":false}`。
 
+對戰紀錄（重播）存在名為 `salem-data` 的 Docker volume（容器內的 `/app/data/replays`），重建容器或 `docker compose up -d --build` 都不會遺失。要備份的話備份這個 volume 即可。
+
 更新版本：`git pull && docker compose up -d --build`。
 
 ## 3. Cloudflare Pages（前端）

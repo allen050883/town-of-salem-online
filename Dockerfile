@@ -21,6 +21,9 @@ COPY apps/server/package.json apps/server/
 COPY apps/web/package.json apps/web/
 RUN npm ci --omit=dev --workspace @salem/server && npm cache clean --force
 COPY --from=build /app/apps/server/dist apps/server/dist
+# Finished games are saved here as replays; mount a volume on /app/data to keep them across rebuilds
+ENV REPLAY_DIR=/app/data/replays
+RUN mkdir -p /app/data/replays && chown -R node:node /app/data
 USER node
 EXPOSE 2567
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \

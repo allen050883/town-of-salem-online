@@ -20,6 +20,9 @@ services:
       NODE_ENV: production
       PORT: '2567'
     networks: [salem]
+    # Replays of finished games; without this volume they disappear when the container is recreated
+    volumes:
+      - salem-data:/app/data
     # Keep resources small so other NAS services aren't affected
     mem_limit: 256m
     cpus: 0.5
@@ -39,3 +42,6 @@ services:
 
 networks:
   salem:
+
+volumes:
+  salem-data:

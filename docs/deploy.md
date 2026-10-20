@@ -7,7 +7,7 @@ salem-api.你的網域    → NAS 上既有的共用 Cloudflare Tunnel → NAS �
 
 - 部署方式比照 FinPilotAsk：push 到 `main` → GitHub Actions 在 **NAS 上的 self-hosted runner** 執行 `docker build` + `docker compose up -d`。
 - 不在這個專案開自己的 `cloudflared`，直接在 NAS 既有的 tunnel 新增 Public Hostname；NAS 不用開公網 port。
-- 遊戲伺服器容器限制 256MB 記憶體、0.5 顆 CPU，實測閒置約 60MB，不會影響 NAS 上其他服務。
+- 遊戲伺服器容器限制 256MB 記憶體，實測閒置約 60MB，不會影響 NAS 上其他服務。
 
 下面的 `salem.mochigogo.fun` 請換成你的網域。
 

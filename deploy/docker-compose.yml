@@ -29,7 +29,6 @@ services:
       # every tunneled service by NAS address:PORT. Add a Public Hostname in that
       # tunnel pointing at http://<NAS LAN IP>:25670 (no cloudflared service here).
       - '25670:2567'
-    # Keep resources small so other NAS services aren't affected
+    # Keep memory small so other NAS services aren't affected (no cpus: the NAS kernel lacks CFS support)
     mem_limit: 256m
-    cpus: 0.5
     stop_grace_period: 15s

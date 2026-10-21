@@ -300,9 +300,9 @@ export class SalemRoom extends Room {
     const token = (this.aiTokens.get(id) ?? 0) + 1;
     this.aiTokens.set(id, token);
     const history = this.log.filter((e) => e.kind === 'event' && (!e.to || e.to.includes(id))).map((e) => e.text);
-    const choice = await aiChoose(projectFor(this.game!, id), history, this.plays, menu);
+    const answer = await aiChoose(projectFor(this.game!, id), history, this.plays, menu);
     if (!this.game || this.version !== version || this.aiTokens.get(id) !== token) return;
-    if (choice !== null && this.dispatch(id, menu[choice]!.action)) return;
+    if (answer && this.dispatch(id, menu[answer.choice]!.action)) return;
     this.ruleAct(id);
   }
 

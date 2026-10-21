@@ -22,7 +22,7 @@ import { CLOSE_REPLACED, RECONNECT_SECONDS } from './protocol';
 import type { ClientMessages, ClientSnapshot, JoinOptions, LogEntry, Member, ReplayRecord } from './protocol';
 import { saveReplay } from './replays';
 import { verifyToken, type AuthUser } from './auth';
-import { aiChoose, aiEnabled, type Play } from './aiBot';
+import { aiChoose, aiEnabled, type AiAnswer, type Play } from './aiBot';
 
 export type { ClientSnapshot, LogEntry } from './protocol';
 
@@ -33,6 +33,8 @@ const MAX_SPECTATORS = 20;
 const DISCONNECTED_SECONDS = 5;
 /** An empty room survives this long so players can refresh or reconnect */
 const EMPTY_ROOM_MS = { lobby: 30_000, game: 10 * 60_000 };
+/** How long a computer player takes per move [min, max] ms: long enough to follow what it did, short enough not to drag */
+const BOT_PACE_MS = { turn: [2200, 3500], other: [1500, 2500] } as const;
 /** Computer players are named after people accused in 1692 (none of them is a Town Hall character) */
 const BOT_NAMES = ['Bridget', 'Susannah', 'Elizabeth', 'Margaret', 'Wilmot', 'Lydia', 'Dorcas', 'Alice', 'Mary', 'Samuel', 'Roger', 'Ann'];
 
@@ -265,7 +267,13 @@ export class SalemRoom extends Room {
     this.broadcastSnapshots();
   }
 
-  /** After every change, let each computer player the game waits on act after a short, human-feeling pause */
+  /** How long the next computer move should take, from when the computer starts deciding */
+  private botPace(): number {
+    const [lo, hi] = this.game?.phase.kind === 'turn' ? BOT_PACE_MS.turn : BOT_PACE_MS.other;
+    return lo + Math.random() * (hi - lo);
+  }
+
+  /** After every change, let each computer player the game waits on act after a human-feeling pause */
   private scheduleBots() {
     for (const t of this.botTimers.values()) t.clear();
     this.botTimers.clear();
@@ -273,34 +281,43 @@ export class SalemRoom extends Room {
     if (!g || g.phase.kind === 'game_over') return;
     for (const id of waitingOn(g)) {
       if (!this.lobby.find((p) => p.id === id)?.bot) continue;
-      const base = g.phase.kind === 'turn' ? 1300 : 800;
+      // With the model the pause is built into botThink (it overlaps with the model's thinking time)
+      const delay = aiEnabled() ? 300 : this.botPace();
       this.botTimers.set(
         id,
         this.clock.setTimeout(() => {
           this.botTimers.delete(id);
           this.botAct(id);
-        }, base + Math.random() * 1000),
+        }, delay),
       );
     }
   }
 
   private botAct(id: PlayerId) {
-    if (!this.game) return;
-    if (aiEnabled()) {
-      const game = this.game;
-      const menu = candidateActions(projectFor(game, id)).filter((c) => reduce(game, { actor: id, action: c.action }).ok);
-      if (menu.length > 1) return void this.aiAct(id, menu);
-    }
-    this.ruleAct(id);
+    const game = this.game;
+    if (!game) return;
+    if (!aiEnabled()) return this.ruleAct(id);
+    const menu = candidateActions(projectFor(game, id)).filter((c) => reduce(game, { actor: id, action: c.action }).ok);
+    void this.botThink(id, menu, this.botPace());
   }
 
-  /** Let the model pick from the menu; if it can't (in time), the rule bot plays instead */
-  private async aiAct(id: PlayerId, menu: Candidate[]) {
+  /**
+   * Let the model pick from the menu (when there is a real choice); if it can't in time, the rule bot plays instead.
+   * Either way the move waits out the pace, so the model's thinking time counts toward the pause instead of adding to it.
+   */
+  private async botThink(id: PlayerId, menu: Candidate[], pace: number) {
     const version = this.version;
     const token = (this.aiTokens.get(id) ?? 0) + 1;
     this.aiTokens.set(id, token);
-    const history = this.log.filter((e) => e.kind === 'event' && (!e.to || e.to.includes(id))).map((e) => e.text);
-    const answer = await aiChoose(projectFor(this.game!, id), history, this.plays, menu);
+    const started = Date.now();
+    let answer: AiAnswer | null = null;
+    if (menu.length > 1) {
+      const history = this.log.filter((e) => e.kind === 'event' && (!e.to || e.to.includes(id))).map((e) => e.text);
+      answer = await aiChoose(projectFor(this.game!, id), history, this.plays, menu);
+    }
+    const rest = pace - (Date.now() - started);
+    if (rest > 0) await new Promise<void>((resolve) => this.clock.setTimeout(resolve, rest));
+    // The game moved on while we were thinking (timer, another action, game over), or a newer decision replaced this one
     if (!this.game || this.version !== version || this.aiTokens.get(id) !== token) return;
     if (answer && this.dispatch(id, menu[answer.choice]!.action)) return;
     this.ruleAct(id);

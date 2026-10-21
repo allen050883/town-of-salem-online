@@ -65,7 +65,8 @@ export function PlayerRow(props: RowProps) {
   const { p, view, targetable } = props;
   const isTurn = view.phase.kind === 'turn' && view.turn.player === p.id;
   const isMe = p.id === view.me;
-  const waiting = p.alive && view.waiting.includes(p.id) && !isTurn;
+  // Whoever the game is waiting on right now: the current turn, or the players who must act in other phases
+  const acting = p.alive && (isTurn || view.waiting.includes(p.id));
   const filled = Math.min(p.accusations, p.threshold) / p.threshold;
 
   return (
@@ -74,6 +75,7 @@ export function PlayerRow(props: RowProps) {
         'pew',
         !p.alive && 'is-dead',
         isTurn && 'is-turn',
+        acting && 'is-acting',
         isMe && 'is-me',
         targetable && 'is-targetable',
         props.selectedFirst && 'is-first',
@@ -95,7 +97,7 @@ export function PlayerRow(props: RowProps) {
           {props.offline && <span className="tag offline">離線</span>}
           {props.bot && <span className="tag">電腦</span>}
           {props.isLeft && <span className="tag left">你的左手邊</span>}
-          {waiting && <span className="tag thinking">行動中</span>}
+          {acting && <span className="tag acting">{isMe ? '輪到你' : '行動中'}</span>}
         </span>
         {p.role && <RoleChip role={p.role} copying={p.effectiveRole} mine={isMe} />}
         <span className="hand-count" title="手牌數" aria-label={`手牌 ${p.handCount} 張`}>

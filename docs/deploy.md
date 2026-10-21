@@ -29,6 +29,7 @@ Settings → Secrets and variables → Actions → New repository secret：
 | `PUBLIC_URL` | `https://salem-api.mochigogo.fun` |
 | `WEB_ORIGINS` | `https://salem.mochigogo.fun` |
 | `AUTH_SECRET` | `openssl rand -hex 32` 產生 |
+| `OLLAMA_URL` / `OLLAMA_MODEL` | 選填。讓電腦玩家用自架的 Ollama 模型思考，例如 `http://<跑 Ollama 的電腦 IP>:11434` 和 `ollama list` 看到的模型名稱。兩個都要設；沒設就用內建策略 |
 
 ## 3. Cloudflare Tunnel
 

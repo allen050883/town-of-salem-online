@@ -6,12 +6,14 @@ import {
   MIN_PLAYERS,
   ROLES,
   botAction,
+  candidateActions,
   createGame,
   phaseTimeoutSeconds,
   projectFor,
   reduce,
   waitingOn,
   type Action,
+  type Candidate,
   type GameOptions,
   type GameState,
   type PlayerId,
@@ -20,6 +22,7 @@ import { CLOSE_REPLACED, RECONNECT_SECONDS } from './protocol';
 import type { ClientMessages, ClientSnapshot, JoinOptions, LogEntry, Member, ReplayRecord } from './protocol';
 import { saveReplay } from './replays';
 import { verifyToken, type AuthUser } from './auth';
+import { aiChoose, aiEnabled, type Play } from './aiBot';
 
 export type { ClientSnapshot, LogEntry } from './protocol';
 
@@ -77,6 +80,12 @@ export class SalemRoom extends Room {
   private emptyTimer: { clear(): void } | null = null;
   private lastWords = new Map<PlayerId, number>();
   private botTimers = new Map<PlayerId, { clear(): void }>();
+  /** Bumped on every accepted action, so an AI answer that arrives after the game moved on is dropped */
+  private version = 0;
+  /** Latest AI request per computer player; an older answer for the same player is dropped */
+  private aiTokens = new Map<PlayerId, number>();
+  /** Cards played on someone this game (public), for the AI's stats */
+  private plays: Play[] = [];
 
   onCreate() {
     this.roomId = makeCode();
@@ -277,6 +286,28 @@ export class SalemRoom extends Room {
 
   private botAct(id: PlayerId) {
     if (!this.game) return;
+    if (aiEnabled()) {
+      const game = this.game;
+      const menu = candidateActions(projectFor(game, id)).filter((c) => reduce(game, { actor: id, action: c.action }).ok);
+      if (menu.length > 1) return void this.aiAct(id, menu);
+    }
+    this.ruleAct(id);
+  }
+
+  /** Let the model pick from the menu; if it can't (in time), the rule bot plays instead */
+  private async aiAct(id: PlayerId, menu: Candidate[]) {
+    const version = this.version;
+    const token = (this.aiTokens.get(id) ?? 0) + 1;
+    this.aiTokens.set(id, token);
+    const history = this.log.filter((e) => e.kind === 'event' && (!e.to || e.to.includes(id))).map((e) => e.text);
+    const choice = await aiChoose(projectFor(this.game!, id), history, this.plays, menu);
+    if (!this.game || this.version !== version || this.aiTokens.get(id) !== token) return;
+    if (choice !== null && this.dispatch(id, menu[choice]!.action)) return;
+    this.ruleAct(id);
+  }
+
+  private ruleAct(id: PlayerId) {
+    if (!this.game) return;
     const action = botAction(projectFor(this.game, id));
     if (action && this.dispatch(id, action)) return;
     // The bot's choice was rejected: fall back to something always safe, or leave it to the phase timer
@@ -321,9 +352,13 @@ export class SalemRoom extends Room {
       winner: null,
     };
     this.lastWords.clear();
+    this.plays = [];
     this.log = [];
     const intro = this.game.phase.kind === 'roles' ? '每個人先從兩位鎮公所角色中選一位。' : '黎明：女巫正在決定把黑貓交給誰…';
     this.pushLog({ kind: 'event', channel: 'system', text: `遊戲開始！共 ${n} 名玩家。${intro}` });
+    if (aiEnabled() && this.lobby.some((p) => p.bot)) {
+      this.pushLog({ kind: 'event', channel: 'system', text: '電腦玩家由 AI 思考；AI 連不上時改用內建策略。' });
+    }
     if (this.game.phase.kind === 'dawn' && this.options.roles) {
       this.pushLog({
         kind: 'event',
@@ -385,12 +420,17 @@ export class SalemRoom extends Room {
   private dispatch(actor: PlayerId | 'system', action: Action, client?: Client): boolean {
     if (!this.game) return false;
     const before = new Set(Object.values(this.game.players).filter((p) => !p.alive).map((p) => p.id));
+    const played = action.type === 'PLAY_CARD' && actor !== 'system' ? this.game.players[actor]?.hand.find((c) => c.id === action.cardId) : undefined;
     const r = reduce(this.game, { actor, action });
     if (!r.ok) {
       if (client) this.sendError(client, r.error);
       return false;
     }
     this.game = r.state;
+    this.version++;
+    if (played && action.type === 'PLAY_CARD' && actor !== 'system') {
+      this.plays.push({ actor, type: played.type, target: action.target, second: action.secondTarget, asWitness: action.asWitness });
+    }
     this.record?.actions.push({ actor, action, at: Date.now() - this.record.startedAt });
     for (const e of r.events) this.pushLog({ kind: 'event', channel: 'public', text: e.text, to: e.visibleTo, fx: e.fx });
     for (const p of Object.values(this.game.players)) {

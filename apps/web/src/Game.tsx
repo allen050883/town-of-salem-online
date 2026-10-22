@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { CARD_COLOR, CARD_NAME, PARRIS_MAX, ROLES, SALVAGE_MAX, type Action, type Card, type PlayerId, type PlayerView } from '@salem/engine';
+import { CARD_COLOR, CARD_NAME, PARRIS_MAX, ROLES, SALVAGE_MAX, type Action, type Card, type CardType, type PlayerId, type PlayerView } from '@salem/engine';
 import type { ClientSnapshot, Connection, Send } from './net';
 import { LogPanel } from './LogPanel';
 import { CardList, PlayerRow, RoleChip, isDark, phaseText } from './Table';
@@ -77,6 +77,8 @@ function leftOf(view: PlayerView): PlayerId | null {
 export function Game({ snap, view, act, send, error, connection, onLeave }: Props) {
   const [sel, setSel] = useState<Selection>(NONE);
   const [panel, setPanel] = useState<'none' | 'discard' | 'parris'>('none');
+  /** A card whose description is on screen (tap any card, even when it isn't your turn) */
+  const [info, setInfo] = useState<CardType | null>(null);
   const [logOpen, setLogOpen] = useState(false);
   const handScale = useHandScale();
   const hand = useHandOverlap(view.myHand.length, CARD_W * handScale);
@@ -179,9 +181,13 @@ export function Game({ snap, view, act, send, error, connection, onLeave }: Prop
         <span className="code-chip" title="房號">
           {snap.roomCode}
         </span>
-        <span className="deck-chip">牌堆 {view.deckCount}</span>
-        <button className="ghost small" onClick={() => setPanel(panel === 'discard' ? 'none' : 'discard')} aria-expanded={panel === 'discard'}>
-          棄牌 {view.discardCount}
+        <button
+          className="ghost small"
+          onClick={() => setPanel(panel === 'discard' ? 'none' : 'discard')}
+          aria-expanded={panel === 'discard'}
+          title="點一下看棄牌堆"
+        >
+          牌堆 {view.deckCount}・棄牌 {view.discardCount}
         </button>
         <Countdown deadline={snap.deadline} />
         <button className="ghost small log-toggle" onClick={() => setLogOpen(!logOpen)} aria-expanded={logOpen}>
@@ -235,6 +241,7 @@ export function Game({ snap, view, act, send, error, connection, onLeave }: Prop
               picture={pictures.get(id)}
               isLeft={showLeft && id === left}
               hit={hits.get(id)}
+              onInfo={(t) => setInfo(info === t ? null : t)}
             />
           ))}
         </section>
@@ -243,6 +250,17 @@ export function Game({ snap, view, act, send, error, connection, onLeave }: Prop
 
       <footer className="hand-bar">
         {error && <p className="error">{error}</p>}
+        {info && (
+          <p className="card-info" role="note">
+            <span>
+              <b>{CARD_NAME[info]}</b>
+              {CARD_DESC[info]}
+            </span>
+            <button className="ghost small" onClick={() => setInfo(null)}>
+              關閉
+            </button>
+          </p>
+        )}
         {ph.kind === 'game_over' ? (
           <GameOver view={view} snap={snap} isHost={snap.hostId === view.me} onBack={() => send('backToLobby')} />
         ) : spectator ? (
@@ -255,9 +273,13 @@ export function Game({ snap, view, act, send, error, connection, onLeave }: Prop
                 <button
                   key={c.id}
                   role="listitem"
-                  className={`hand-card ${sel.card?.id === c.id ? 'is-selected' : ''}`}
-                  disabled={!myTurn || view.turn.mode === 'drawing'}
-                  onClick={() => setSel(sel.card?.id === c.id ? NONE : { card: c, first: null, asWitness: false })}
+                  className={`hand-card ${sel.card?.id === c.id ? 'is-selected' : ''} ${!myTurn || view.turn.mode === 'drawing' ? 'is-locked' : ''}`}
+                  onClick={() => {
+                    // Not your turn: you can still read what the card does
+                    if (!myTurn || view.turn.mode === 'drawing') return setInfo(info === c.type ? null : c.type);
+                    setInfo(null);
+                    setSel(sel.card?.id === c.id ? NONE : { card: c, first: null, asWitness: false });
+                  }}
                   title={`${CARD_NAME[c.type]}：${CARD_DESC[c.type]}`}
                   aria-label={`${CARD_NAME[c.type]}：${CARD_DESC[c.type]}`}
                 >

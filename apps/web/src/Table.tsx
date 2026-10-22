@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { CARD_COLOR, CARD_NAME, ROLES, type Card, type PlayerId, type PlayerView, type PublicPlayer, type RoleId } from '@salem/engine';
+import { CARD_COLOR, CARD_NAME, ROLES, type Card, type CardType, type PlayerId, type PlayerView, type PublicPlayer, type RoleId } from '@salem/engine';
 import { CARD_DESC, TRYAL_FULL, TRYAL_LABEL } from './text';
 import { Avatar } from './Avatar';
 import { CardFace } from './CardFace';
@@ -59,6 +59,8 @@ export interface RowProps {
   isLeft?: boolean;
   /** Something just happened to this player: light the row and float the label */
   hit?: Hit;
+  /** Tap a card in front of the player to read what it does */
+  onInfo?: (type: CardType) => void;
 }
 
 export function PlayerRow(props: RowProps) {
@@ -138,8 +140,8 @@ export function PlayerRow(props: RowProps) {
               <button
                 key={c.id}
                 className={`chip c-${CARD_COLOR[c.type]} ${props.frontPickable(c) ? 'is-pickable' : ''}`}
-                disabled={!props.frontPickable(c)}
-                onClick={() => props.onFront(c)}
+                disabled={!props.frontPickable(c) && !props.onInfo}
+                onClick={() => (props.frontPickable(c) ? props.onFront(c) : props.onInfo?.(c.type))}
                 title={CARD_DESC[c.type]}
               >
                 {CARD_NAME[c.type]}
@@ -218,15 +220,27 @@ export function isDark(view: PlayerView) {
 }
 
 export function CardList({ cards, picked, onToggle }: { cards: Card[]; picked?: Set<string>; onToggle?: (c: Card) => void }) {
+  // A read-only list (the discard pile): tapping a card shows what it does
+  const [viewing, setViewing] = useState<CardType | null>(null);
   if (cards.length === 0) return <p className="muted">（沒有牌）</p>;
   return (
     <div className="card-list">
+      {viewing && !onToggle && (
+        <p className="card-info" role="note">
+          <span>
+            <b>{CARD_NAME[viewing]}</b>
+            {CARD_DESC[viewing]}
+          </span>
+          <button className="ghost small" onClick={() => setViewing(null)}>
+            關閉
+          </button>
+        </p>
+      )}
       {cards.map((c) => (
         <button
           key={c.id}
-          className={`hand-card ${picked?.has(c.id) ? 'is-selected' : ''}`}
-          disabled={!onToggle}
-          onClick={() => onToggle?.(c)}
+          className={`hand-card ${picked?.has(c.id) ? 'is-selected' : ''} ${onToggle ? '' : 'is-locked'}`}
+          onClick={() => (onToggle ? onToggle(c) : setViewing(viewing === c.type ? null : c.type))}
           title={`${CARD_NAME[c.type]}：${CARD_DESC[c.type]}`}
           aria-label={`${CARD_NAME[c.type]}：${CARD_DESC[c.type]}`}
           aria-pressed={picked ? picked.has(c.id) : undefined}

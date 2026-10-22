@@ -33,10 +33,10 @@ const MAX_SPECTATORS = 20;
 const DISCONNECTED_SECONDS = 5;
 /** An empty room survives this long so players can refresh or reconnect */
 const EMPTY_ROOM_MS = { lobby: 30_000, game: 10 * 60_000 };
-/** How long a computer player takes per move [min, max] ms: long enough to follow what it did, short enough not to drag */
-const BOT_PACE_MS = { turn: [2200, 3500], other: [1500, 2500] } as const;
-/** Computer players are named after people accused in 1692 (none of them is a Town Hall character) */
-const BOT_NAMES = ['Bridget', 'Susannah', 'Elizabeth', 'Margaret', 'Wilmot', 'Lydia', 'Dorcas', 'Alice', 'Mary', 'Samuel', 'Roger', 'Ann'];
+/** How long a computer player takes per move [min, max] ms: long enough to read what it just did before the next step */
+const BOT_PACE_MS = { turn: [4000, 5200], other: [2800, 3800] } as const;
+/** Computer players get friendly Chinese nicknames (a full table of 12 needs at least 11) */
+const BOT_NAMES = ['小明', '小華', '小美', '阿強', '小芳', '阿德', '小玲', '阿志', '小傑', '阿珠', '小雯', '阿豪'];
 
 function makeCode(): string {
   const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -66,6 +66,8 @@ export class SalemRoom extends Room {
   private spectators: Member[] = [];
   private hostId: PlayerId | null = null;
   private options: GameOptions = { ...DEFAULT_OPTIONS };
+  /** Seats chosen by the host; null = no fixed number */
+  private seatCount: number | null = null;
   /** sessionId → member id */
   private sessions = new Map<string, PlayerId>();
   private game: GameState | null = null;
@@ -107,6 +109,7 @@ export class SalemRoom extends Room {
     on('chat', (client, msg) => this.handleChat(client, typeof msg?.text === 'string' ? msg.text : ''));
     on('backToLobby', (client) => this.handleBackToLobby(client));
     on('options', (client, msg) => this.handleOptions(client, msg));
+    on('seatCount', (client, msg) => this.handleSeatCount(client, msg?.count));
     on('seat', (client, msg) => this.handleSeat(client, !!msg?.spectate));
     on('addBots', (client, msg) => this.handleAddBots(client, msg?.count ?? 1));
     on('removeBot', (client, msg) => this.handleRemoveBot(client, String(msg?.id ?? '')));
@@ -119,7 +122,7 @@ export class SalemRoom extends Room {
     const user = verifyToken(options?.token);
     if (!user) throw new Error('請先用 LINE 登入');
     if (this.member(user.id)) return user;
-    if (this.spectators.length >= MAX_SPECTATORS && (this.game || options.spectate || this.lobby.length >= MAX_PLAYERS)) {
+    if (this.spectators.length >= MAX_SPECTATORS && (this.game || options.spectate || this.lobby.length >= this.capacity())) {
       throw new Error('房間已滿');
     }
     return user;
@@ -148,7 +151,7 @@ export class SalemRoom extends Room {
         existing.picture = picture;
       }
       this.setConnected(playerId, true);
-    } else if (this.game || options.spectate || this.lobby.length >= MAX_PLAYERS) {
+    } else if (this.game || options.spectate || this.lobby.length >= this.capacity()) {
       this.spectators.push({ id: playerId, name, picture, connected: true });
       this.pushLog({ kind: 'event', channel: 'system', text: `${name} 進來觀戰` });
     } else {
@@ -246,15 +249,26 @@ export class SalemRoom extends Room {
   private handleAddBots(client: Client, count: number) {
     if (this.sessions.get(client.sessionId) !== this.hostId) return this.sendError(client, '只有房主可以加入電腦玩家');
     if (this.game && this.game.phase.kind !== 'game_over') return this.sendError(client, '遊戲進行中不能加入電腦玩家');
-    const n = Math.max(1, Math.min(Math.floor(Number(count) || 1), MAX_PLAYERS - this.lobby.length));
-    if (this.lobby.length >= MAX_PLAYERS) return this.sendError(client, '座位已滿');
+    if (this.lobby.length >= this.capacity()) return this.sendError(client, '座位已滿');
+    const n = this.seatBots(Math.max(1, Math.floor(Number(count) || 1)));
+    this.pushLog({ kind: 'event', channel: 'system', text: `加入了 ${n} 位電腦玩家` });
+    this.broadcastSnapshots();
+  }
+
+  /** How many players this game can seat: the host's number, or the table maximum */
+  private capacity(): number {
+    return this.seatCount ?? MAX_PLAYERS;
+  }
+
+  /** Seat up to `count` computer players (as many as fit); returns how many were seated */
+  private seatBots(count: number): number {
+    const n = Math.max(0, Math.min(count, this.capacity() - this.lobby.length));
     for (let i = 0; i < n; i++) {
       const used = new Set(this.lobby.map((p) => p.name));
       const name = BOT_NAMES.find((x) => !used.has(x)) ?? `電腦 ${this.lobby.length + 1}`;
       this.lobby.push({ id: `bot-${randomUUID()}`, name, connected: true, bot: true });
     }
-    this.pushLog({ kind: 'event', channel: 'system', text: `加入了 ${n} 位電腦玩家` });
-    this.broadcastSnapshots();
+    return n;
   }
 
   private handleRemoveBot(client: Client, id: PlayerId) {
@@ -347,6 +361,9 @@ export class SalemRoom extends Room {
     const pid = this.sessions.get(client.sessionId);
     if (pid !== this.hostId) return this.sendError(client, '只有房主可以開始遊戲');
     if (this.game && this.game.phase.kind !== 'game_over') return this.sendError(client, '遊戲進行中');
+    // The host fixed the number of seats: empty ones are filled with computer players
+    const humans = this.lobby.length;
+    const filled = this.seatCount === null ? 0 : this.seatBots(this.seatCount - humans);
     const n = this.lobby.length;
     if (n < MIN_PLAYERS || n > MAX_PLAYERS) return this.sendError(client, `需要 ${MIN_PLAYERS}–${MAX_PLAYERS} 名玩家（目前 ${n} 名）`);
 
@@ -373,6 +390,7 @@ export class SalemRoom extends Room {
     this.log = [];
     const intro = this.game.phase.kind === 'roles' ? '每個人先從兩位鎮公所角色中選一位。' : '黎明：女巫正在決定把黑貓交給誰…';
     this.pushLog({ kind: 'event', channel: 'system', text: `遊戲開始！共 ${n} 名玩家。${intro}` });
+    if (filled > 0) this.pushLog({ kind: 'event', channel: 'system', text: `座位不足的部分由 ${filled} 位電腦玩家補滿。` });
     if (aiEnabled() && this.lobby.some((p) => p.bot)) {
       this.pushLog({ kind: 'event', channel: 'system', text: '電腦玩家由 AI 思考；AI 連不上時改用內建策略。' });
     }
@@ -408,6 +426,20 @@ export class SalemRoom extends Room {
     this.broadcastSnapshots();
   }
 
+  private handleSeatCount(client: Client, count: unknown) {
+    const pid = this.sessions.get(client.sessionId);
+    if (pid !== this.hostId) return this.sendError(client, '只有房主可以決定遊戲人數');
+    if (this.game && this.game.phase.kind !== 'game_over') return this.sendError(client, '遊戲進行中不能調整人數');
+    if (count === null) this.seatCount = null;
+    else {
+      const n = Number(count);
+      if (!Number.isInteger(n) || n < MIN_PLAYERS || n > MAX_PLAYERS) return this.sendError(client, `人數要在 ${MIN_PLAYERS}–${MAX_PLAYERS} 之間`);
+      if (n < this.lobby.length) return this.sendError(client, `目前已有 ${this.lobby.length} 人入座，請先移除電腦玩家或請人改成觀戰`);
+      this.seatCount = n;
+    }
+    this.broadcastSnapshots();
+  }
+
   private handleSeat(client: Client, spectate: boolean) {
     const pid = this.sessions.get(client.sessionId);
     if (!pid) return;
@@ -418,7 +450,7 @@ export class SalemRoom extends Room {
       this.lobby = this.lobby.filter((p) => p.id !== pid);
       this.spectators.push(m);
     } else if (!spectate && !this.isPlayer(pid)) {
-      if (this.lobby.length >= MAX_PLAYERS) return this.sendError(client, '座位已滿');
+      if (this.lobby.length >= this.capacity()) return this.sendError(client, '座位已滿');
       this.spectators = this.spectators.filter((p) => p.id !== pid);
       this.lobby.push(m);
     }
@@ -590,6 +622,7 @@ export class SalemRoom extends Room {
       lobby: this.lobby,
       spectators: this.spectators,
       options: this.options,
+      seatCount: this.seatCount,
       view: this.game ? projectFor(this.game, pid) : null,
       log: this.log.filter((e) => !e.to || e.to.includes(pid)),
       deadline: this.deadline,

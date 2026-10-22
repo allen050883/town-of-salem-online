@@ -36,6 +36,8 @@ export interface ClientSnapshot {
   lobby: Member[];
   spectators: Member[];
   options: GameOptions;
+  /** Seats in this game chosen by the host (4–12); null = whoever is seated plays. Empty seats are filled with computer players at the start */
+  seatCount: number | null;
   view: PlayerView | null;
   log: LogEntry[];
   /** Phase deadline (epoch ms) */
@@ -68,6 +70,8 @@ export interface ClientMessages {
   action: Action;
   chat: { text: string };
   options: Partial<GameOptions>;
+  /** Host only, in the lobby: how many seats this game has (null = no fixed number) */
+  seatCount: { count: number | null };
   /** Spectator takes a free seat / player moves to the spectator benches (lobby only) */
   seat: { spectate: boolean };
   /** Host only, in the lobby: add computer players / remove one */

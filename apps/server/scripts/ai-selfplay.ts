@@ -26,7 +26,7 @@ import { aiChoose, aiEnabled, type Play } from '../src/aiBot';
 const GAMES = Number(process.env.GAMES ?? 10);
 const N = Number(process.env.N ?? 5);
 const OUT = process.env.OUT ?? 'ai-selfplay-out';
-const NAMES = ['Bridget', 'Susannah', 'Elizabeth', 'Margaret', 'Wilmot', 'Lydia', 'Dorcas', 'Alice', 'Mary', 'Samuel', 'Roger', 'Ann'];
+const NAMES = ['小明', '小華', '小美', '阿強', '小芳', '阿德', '小玲', '阿志', '小傑', '阿珠', '小雯', '阿豪'];
 
 if (!aiEnabled()) {
   console.error('Set OLLAMA_URL and OLLAMA_MODEL');

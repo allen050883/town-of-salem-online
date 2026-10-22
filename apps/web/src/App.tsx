@@ -7,8 +7,8 @@ import { Game } from './Game';
 import { LogPanel } from './LogPanel';
 import { Replay } from './Replay';
 
-/** Computer players seated by the solo-play button (a 5-player table) */
-const SOLO_BOTS = 4;
+/** Default table size for solo play: you and four computer players */
+const SOLO_DEFAULT = 5;
 
 export function App() {
   const replayId = new URLSearchParams(location.search).get('replay');
@@ -54,6 +54,7 @@ function Entry({ salem, onReplay, replayError }: { salem: Salem; onReplay: (r: R
   const [code, setCode] = useState('');
   const [devName, setDevName] = useState('');
   const [spectate, setSpectate] = useState(false);
+  const [soloTotal, setSoloTotal] = useState(SOLO_DEFAULT);
 
   return (
     <main className="entry">
@@ -100,9 +101,18 @@ function Entry({ salem, onReplay, replayError }: { salem: Salem; onReplay: (r: R
             {busy ? '連線中…' : code.trim() ? (spectate ? '進去觀戰' : '加入房間') : '建立新房間'}
           </button>
           {!code.trim() && (
-            <button type="button" disabled={busy} onClick={() => void connect('create', undefined, false, SOLO_BOTS)}>
-              單人遊戲（和 {SOLO_BOTS} 位電腦玩家）
-            </button>
+            <div className="solo">
+              <button type="button" disabled={busy} onClick={() => void connect('create', undefined, false, soloTotal - 1)}>
+                單人遊戲（和 {soloTotal - 1} 位電腦玩家）
+              </button>
+              <select value={soloTotal} onChange={(e) => setSoloTotal(Number(e.target.value))} aria-label="單人遊戲的總人數">
+                {Array.from({ length: MAX_PLAYERS - MIN_PLAYERS + 1 }, (_, i) => MIN_PLAYERS + i).map((k) => (
+                  <option key={k} value={k}>
+                    共 {k} 人
+                  </option>
+                ))}
+              </select>
+            </div>
           )}
           {error && <p className="error">{error}</p>}
         </form>
@@ -195,7 +205,10 @@ function Lobby({ salem, snap }: { salem: Salem; snap: ClientSnapshot }) {
   const { send, leave, error, setOptions } = salem;
   const isHost = snap.hostId === snap.me;
   const n = snap.lobby.length;
-  const canStart = n >= MIN_PLAYERS && n <= MAX_PLAYERS;
+  const seats = snap.seatCount ?? MAX_PLAYERS;
+  const fillBots = snap.seatCount === null ? 0 : Math.max(0, snap.seatCount - n);
+  // With a fixed number of seats the empty ones are filled with computer players at the start
+  const canStart = snap.seatCount === null ? n >= MIN_PLAYERS && n <= MAX_PLAYERS : n >= 1 && n <= snap.seatCount;
   const spectating = snap.seat === 'spectator';
 
   return (
@@ -205,7 +218,7 @@ function Lobby({ salem, snap }: { salem: Salem; snap: ClientSnapshot }) {
         <div className="room-code">{snap.roomCode}</div>
 
         <h2>
-          鎮民名冊（{n} / {MAX_PLAYERS}）
+          鎮民名冊（{n} / {snap.seatCount ?? '不限'}）
         </h2>
         <ol className="roster">
           {snap.lobby.map((p) => (
@@ -226,10 +239,10 @@ function Lobby({ salem, snap }: { salem: Salem; snap: ClientSnapshot }) {
         </ol>
         {isHost && (
           <div className="turn-actions">
-            <button className="small" onClick={() => send('addBots', { count: 1 })} disabled={n >= MAX_PLAYERS}>
+            <button className="small" onClick={() => send('addBots', { count: 1 })} disabled={n >= seats}>
               加入電腦玩家
             </button>
-            {n < MIN_PLAYERS && (
+            {snap.seatCount === null && n < MIN_PLAYERS && (
               <button className="small" onClick={() => send('addBots', { count: MIN_PLAYERS - n })}>
                 用電腦補到 {MIN_PLAYERS} 人
               </button>
@@ -255,6 +268,18 @@ function Lobby({ salem, snap }: { salem: Salem; snap: ClientSnapshot }) {
         <fieldset className="options" disabled={!isHost}>
           <legend>規則{isHost ? '' : '（由房主決定）'}</legend>
           <label className="check">
+            遊戲人數
+            <select value={snap.seatCount ?? ''} onChange={(e) => send('seatCount', { count: e.target.value === '' ? null : Number(e.target.value) })}>
+              <option value="">不固定（現場有幾人就幾人）</option>
+              {Array.from({ length: MAX_PLAYERS - MIN_PLAYERS + 1 }, (_, i) => MIN_PLAYERS + i).map((k) => (
+                <option key={k} value={k} disabled={k < n}>
+                  {k} 人{k < n ? '（目前人數已超過）' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+          {snap.seatCount !== null && <p className="muted small-text">開始時，空著的座位會由電腦玩家補滿；坐滿後再進來的人會變成觀戰。</p>}
+          <label className="check">
             <input type="checkbox" checked={snap.options.roles} onChange={(e) => setOptions({ roles: e.target.checked })} />
             鎮公所角色（{ROLE_CHOICE_MAX_PLAYERS} 人以下每人從 2 位中選 1 位）
           </label>
@@ -265,12 +290,12 @@ function Lobby({ salem, snap }: { salem: Salem; snap: ClientSnapshot }) {
         </fieldset>
 
         {spectating ? (
-          <button onClick={() => send('seat', { spectate: false })} disabled={n >= MAX_PLAYERS}>
+          <button onClick={() => send('seat', { spectate: false })} disabled={n >= seats}>
             入座參加遊戲
           </button>
         ) : isHost ? (
           <button className="primary" disabled={!canStart} onClick={() => send('start')}>
-            {canStart ? '開始遊戲' : `還需要 ${MIN_PLAYERS - n} 人才能開始`}
+            {canStart ? (fillBots > 0 ? `開始遊戲（電腦補 ${fillBots} 位）` : '開始遊戲') : `還需要 ${MIN_PLAYERS - n} 人才能開始`}
           </button>
         ) : (
           <p className="muted">等待房主開始遊戲…</p>

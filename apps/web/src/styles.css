@@ -766,6 +766,22 @@ button.small {
   font: 600 0.95rem var(--serif);
   padding: 0 0.3rem;
 }
+.options select,
+.solo select {
+  font: inherit;
+  padding: 0.25rem 0.4rem;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+}
+.solo {
+  display: flex;
+  gap: 0.5rem;
+}
+.solo button {
+  flex: 1;
+}
 .entry-form label.check,
 .check {
   display: flex;
@@ -1208,6 +1224,31 @@ button.small {
 }
 .hand-card:disabled {
   opacity: 0.6;
+}
+/* Not usable right now, but still tappable to read the description */
+.hand-card.is-locked {
+  opacity: 0.8;
+}
+.hand-card.is-locked:not(:disabled):hover {
+  transform: none;
+}
+.card-info {
+  flex-basis: 100%;
+  margin: 0;
+  padding: 0.4rem 0.6rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  background: color-mix(in srgb, var(--wax) 14%, var(--panel));
+  border-left: 3px solid var(--wax);
+  border-radius: 3px;
+}
+.card-info b {
+  font-family: var(--serif);
+  margin-right: 0.4rem;
 }
 .hand-card:not(:disabled):hover {
   transform: translateY(-4px);

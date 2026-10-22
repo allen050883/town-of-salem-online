@@ -108,6 +108,8 @@ export type Phase =
       victim: PlayerId | null;
       gavel: PlayerId | null;
       confessed: PlayerId[];
+      /** What each confession revealed (null = confessed without turning a card, William Phips) */
+      confessKinds?: Record<PlayerId, TryalKind | null>;
       passed: PlayerId[];
     }
   | { kind: 'conspiracy'; picks: Record<PlayerId, string> }
@@ -181,12 +183,24 @@ export interface EventFx {
   label: string;
 }
 
+/** A moment the whole table should see full-screen, in the order it happens (the night's protection, confessions, the Witches' target, who dies, the winner) */
+export type Announcement =
+  /** Daybreak: whom the Constable protects (null = nobody) */
+  | { kind: 'protect'; player: PlayerId | null }
+  | { kind: 'confess'; players: { id: PlayerId; revealed: TryalKind | null }[] }
+  | { kind: 'target'; player: PlayerId }
+  | { kind: 'survive'; player: PlayerId; reason: string }
+  | { kind: 'peace' }
+  | { kind: 'death'; player: PlayerId; cause: string; wasWitch: boolean }
+  | { kind: 'victory'; winner: Winner; witches: PlayerId[] };
+
 /** Log event; visibleTo omitted means public */
 export interface GameEvent {
   seq: number;
   text: string;
   visibleTo?: PlayerId[];
   fx?: EventFx[];
+  announce?: Announcement;
 }
 
 export type ReduceResult =

@@ -163,7 +163,7 @@ export function PlayerRow(props: RowProps) {
 }
 
 /** Read-only rows (replays, spectators before interaction is wired) */
-export function StaticTown({ view, offline }: { view: PlayerView; offline?: Set<PlayerId> }) {
+export function StaticTown({ view, offline, hits }: { view: PlayerView; offline?: Set<PlayerId>; hits?: Map<PlayerId, Hit> }) {
   return (
     <section className="town" aria-label="鎮民">
       {view.seats.map((id) => (
@@ -179,6 +179,7 @@ export function StaticTown({ view, offline }: { view: PlayerView; offline?: Set<
           onTryal={() => {}}
           onFront={() => {}}
           offline={offline?.has(id)}
+          hit={hits?.get(id)}
         />
       ))}
     </section>
@@ -205,7 +206,7 @@ export function phaseText(view: PlayerView): string {
       return `${name(ph.chooser)}（${ROLES.proctor.title}）正在挑選 ${name(ph.from)} 留下的 ${ph.count} 張手牌…`;
     case 'night':
       if (ph.step === 'witches') return ph.victim || ph.votes ? `女巫正在投票（目前目標：${ph.victim ? name(ph.victim) : '未定'}）` : '夜晚。所有人閉上眼睛…';
-      if (ph.step === 'constable') return ph.gavel !== null ? `警長把法槌交給 ${name(ph.gavel)}` : '夜晚。警長正在行動…';
+      if (ph.step === 'constable') return ph.gavel !== null ? `警長選擇保護 ${name(ph.gavel)}` : '夜晚。警長正在行動…';
       return '天亮前：大家正在決定要不要自首…';
     case 'conspiracy':
       return '傳染：每個人從左手邊玩家拿走一張審判牌…';

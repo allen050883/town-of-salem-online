@@ -5,6 +5,7 @@ import {
   MAX_PLAYERS,
   MIN_PLAYERS,
   ROLES,
+  announceItems,
   botAction,
   candidateActions,
   createGame,
@@ -13,6 +14,8 @@ import {
   reduce,
   waitingOn,
   type Action,
+  type AnnounceItem,
+  type Announcement,
   type Candidate,
   type GameOptions,
   type GameState,
@@ -33,8 +36,8 @@ const MAX_SPECTATORS = 20;
 const DISCONNECTED_SECONDS = 5;
 /** An empty room survives this long so players can refresh or reconnect */
 const EMPTY_ROOM_MS = { lobby: 30_000, game: 10 * 60_000 };
-/** How long a computer player takes per move [min, max] ms: long enough to read what it just did before the next step */
-const BOT_PACE_MS = { turn: [4000, 5200], other: [2800, 3800] } as const;
+/** Seconds a computer player takes per move: the host can change it (this is the default and the allowed range) */
+const BOT_SECONDS = { default: 4, min: 1, max: 10 } as const;
 /** Computer players get friendly Chinese nicknames (a full table of 12 needs at least 11) */
 const BOT_NAMES = ['小明', '小華', '小美', '阿強', '小芳', '阿德', '小玲', '阿志', '小傑', '阿珠', '小雯', '阿豪'];
 
@@ -68,6 +71,8 @@ export class SalemRoom extends Room {
   private options: GameOptions = { ...DEFAULT_OPTIONS };
   /** Seats chosen by the host; null = no fixed number */
   private seatCount: number | null = null;
+  /** Seconds a computer player takes per move; the host can change it at any time, even mid-game */
+  private botSeconds: number = BOT_SECONDS.default;
   /** sessionId → member id */
   private sessions = new Map<string, PlayerId>();
   private game: GameState | null = null;
@@ -84,6 +89,10 @@ export class SalemRoom extends Room {
   private emptyTimer: { clear(): void } | null = null;
   private lastWords = new Map<PlayerId, number>();
   private botTimers = new Map<PlayerId, { clear(): void }>();
+  /** Full-screen cards the table is looking at; until pauseUntil the game waits (timers, computer players, human actions) */
+  private announce: { id: number; items: AnnounceItem[] } | null = null;
+  private announceSeq = 0;
+  private pauseUntil = 0;
   /** Bumped on every accepted action, so an AI answer that arrives after the game moved on is dropped */
   private version = 0;
   /** Latest AI request per computer player; an older answer for the same player is dropped */
@@ -110,6 +119,7 @@ export class SalemRoom extends Room {
     on('backToLobby', (client) => this.handleBackToLobby(client));
     on('options', (client, msg) => this.handleOptions(client, msg));
     on('seatCount', (client, msg) => this.handleSeatCount(client, msg?.count));
+    on('botPace', (client, msg) => this.handleBotPace(client, msg?.seconds));
     on('seat', (client, msg) => this.handleSeat(client, !!msg?.spectate));
     on('addBots', (client, msg) => this.handleAddBots(client, msg?.count ?? 1));
     on('removeBot', (client, msg) => this.handleRemoveBot(client, String(msg?.id ?? '')));
@@ -281,10 +291,25 @@ export class SalemRoom extends Room {
     this.broadcastSnapshots();
   }
 
+  /** Put the announcements from one action on screen and make the game wait for them */
+  private showAnnouncements(list: Announcement[]) {
+    if (list.length === 0) return;
+    const items = announceItems(list);
+    this.announce = { id: ++this.announceSeq, items };
+    this.pauseUntil = Date.now() + items.reduce((n, i) => n + i.ms, 0) + (items.some((i) => i.ms > 0) ? 400 : 0);
+  }
+
+  /** What to send clients: while the game is waiting on it, or the winner's card for as long as the game is over */
+  private visibleAnnounce() {
+    if (!this.announce) return null;
+    return Date.now() < this.pauseUntil || this.game?.phase.kind === 'game_over' ? this.announce : null;
+  }
+
   /** How long the next computer move should take, from when the computer starts deciding */
   private botPace(): number {
-    const [lo, hi] = this.game?.phase.kind === 'turn' ? BOT_PACE_MS.turn : BOT_PACE_MS.other;
-    return lo + Math.random() * (hi - lo);
+    // A turn (cards played on someone) takes the full time; other steps a bit less; a little jitter keeps it human
+    const base = this.botSeconds * 1000 * (this.game?.phase.kind === 'turn' ? 1 : 0.7);
+    return base * (1 + Math.random() * 0.3);
   }
 
   /** After every change, let each computer player the game waits on act after a human-feeling pause */
@@ -296,7 +321,7 @@ export class SalemRoom extends Room {
     for (const id of waitingOn(g)) {
       if (!this.lobby.find((p) => p.id === id)?.bot) continue;
       // With the model the pause is built into botThink (it overlaps with the model's thinking time)
-      const delay = aiEnabled() ? 300 : this.botPace();
+      const delay = (aiEnabled() ? 300 : this.botPace()) + Math.max(0, this.pauseUntil - Date.now());
       this.botTimers.set(
         id,
         this.clock.setTimeout(() => {
@@ -387,6 +412,8 @@ export class SalemRoom extends Room {
     };
     this.lastWords.clear();
     this.plays = [];
+    this.announce = null;
+    this.pauseUntil = 0;
     this.log = [];
     const intro = this.game.phase.kind === 'roles' ? '每個人先從兩位鎮公所角色中選一位。' : '黎明：女巫正在決定把黑貓交給誰…';
     this.pushLog({ kind: 'event', channel: 'system', text: `遊戲開始！共 ${n} 名玩家。${intro}` });
@@ -410,6 +437,8 @@ export class SalemRoom extends Room {
     if (!this.game || this.game.phase.kind !== 'game_over') return this.sendError(client, '遊戲尚未結束');
     this.game = null;
     this.record = null;
+    this.announce = null;
+    this.pauseUntil = 0;
     this.clearTimer();
     // Remove players who disconnected
     this.lobby = this.lobby.filter((p) => p.connected);
@@ -423,6 +452,14 @@ export class SalemRoom extends Room {
     if (this.game && this.game.phase.kind !== 'game_over') return this.sendError(client, '遊戲進行中不能調整規則');
     if (typeof patch?.roles === 'boolean') this.options.roles = patch.roles;
     if (typeof patch?.extraWitch === 'boolean') this.options.extraWitch = patch.extraWitch;
+    this.broadcastSnapshots();
+  }
+
+  private handleBotPace(client: Client, seconds: unknown) {
+    if (this.sessions.get(client.sessionId) !== this.hostId) return this.sendError(client, '只有房主可以調整電腦的速度');
+    const n = Number(seconds);
+    if (!Number.isFinite(n)) return;
+    this.botSeconds = Math.min(BOT_SECONDS.max, Math.max(BOT_SECONDS.min, Math.round(n * 2) / 2));
     this.broadcastSnapshots();
   }
 
@@ -462,6 +499,7 @@ export class SalemRoom extends Room {
     const pid = this.sessions.get(client.sessionId);
     if (!pid || !this.game || !this.isPlayer(pid)) return;
     if (!action || typeof action !== 'object' || action.type === 'TIMEOUT') return;
+    if (Date.now() < this.pauseUntil) return this.sendError(client, '請稍候，正在公布結果');
     this.dispatch(pid, action, client);
   }
 
@@ -477,6 +515,7 @@ export class SalemRoom extends Room {
     }
     this.game = r.state;
     this.version++;
+    this.showAnnouncements(r.events.flatMap((e) => (e.announce ? [e.announce] : [])));
     if (played && action.type === 'PLAY_CARD' && actor !== 'system') {
       this.plays.push({ actor, type: played.type, target: action.target, second: action.secondTarget, asWitness: action.asWitness });
     }
@@ -576,12 +615,14 @@ export class SalemRoom extends Room {
 
   private schedule(secs: number) {
     this.timer?.clear();
-    this.deadline = Date.now() + secs * 1000;
+    // The clock starts once the announcements on screen are done
+    const now = Date.now();
+    this.deadline = Math.max(now, this.pauseUntil) + secs * 1000;
     this.timer = this.clock.setTimeout(() => {
       this.timer = null;
       this.hurried = false;
       this.dispatch('system', { type: 'TIMEOUT' });
-    }, secs * 1000);
+    }, this.deadline - now);
   }
 
   /** If every player the phase waits on is disconnected, don't make the table wait the full time */
@@ -623,10 +664,12 @@ export class SalemRoom extends Room {
       spectators: this.spectators,
       options: this.options,
       seatCount: this.seatCount,
+      botSeconds: this.botSeconds,
       view: this.game ? projectFor(this.game, pid) : null,
       log: this.log.filter((e) => !e.to || e.to.includes(pid)),
       deadline: this.deadline,
       lastWordsLeft: this.game?.players[pid]?.alive === false ? (this.lastWords.get(pid) ?? 0) : null,
+      announce: this.visibleAnnounce(),
       lastReplayId: this.lastReplayId,
       gameId: this.game ? this.gameId : null,
     };

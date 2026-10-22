@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TRYAL_TABLE, accusationTotal, projectFor } from '../src';
+import { TRYAL_TABLE, accusationTotal, projectFor, reduce } from '../src';
 import { card, fails, give, must, newGame, scenario, setTryals, skipDawn } from './helpers';
 
 describe('setup', () => {
@@ -176,6 +176,60 @@ describe('night', () => {
     const townView = projectFor(s, 'C').phase;
     expect(witchView.kind === 'night' && witchView.victim).toBe('C');
     expect(townView.kind === 'night' && townView.victim).toBe(null);
+  });
+});
+
+/** The full-screen moments of a night, in order: protection, confessions, the Witches' target, then the outcome */
+describe('night announcements', () => {
+  const announces = (events: { announce?: { kind: string } }[]) => events.flatMap((e) => (e.announce ? [e.announce.kind] : []));
+  const step = (s: ReturnType<typeof toNight>, actor: string, action: Parameters<typeof must>[2]) => {
+    const r = reduce(s, { actor, action });
+    if (!r.ok) throw new Error(r.error);
+    return r;
+  };
+
+  it('announces the protection first, then confessions, the target and a death', () => {
+    let s = toNight();
+    s = must(s, 'A', { type: 'WITCH_VOTE', target: 'C' });
+    const guard = step(s, 'B', { type: 'CONSTABLE_GAVEL', target: 'D' });
+    expect(announces(guard.events)).toEqual(['protect']);
+    expect(guard.events.find((e) => e.announce?.kind === 'protect')!.announce).toEqual({ kind: 'protect', player: 'D' });
+    // Nothing public says where the "gavel" went: only the protection
+    expect(guard.events.map((e) => e.text).join('|')).not.toMatch('法槌');
+    s = guard.state;
+    for (const p of ['A', 'B', 'D']) s = must(s, p, { type: 'NIGHT_PASS' });
+    const end = step(s, 'C', { type: 'NIGHT_PASS' });
+    expect(announces(end.events)).toEqual(['confess', 'target', 'death']);
+    expect(end.events.find((e) => e.announce?.kind === 'confess')!.announce).toEqual({ kind: 'confess', players: [] });
+    expect(end.events.find((e) => e.announce?.kind === 'death')!.announce).toMatchObject({ kind: 'death', player: 'C', wasWitch: false });
+  });
+
+  it('summarises who confessed and what they turned, then says the victim survived', () => {
+    let s = toNight();
+    s = must(s, 'A', { type: 'WITCH_VOTE', target: 'C' });
+    s = must(s, 'B', { type: 'CONSTABLE_GAVEL', target: 'D' });
+    s = must(s, 'C', { type: 'CONFESS', tryalId: 'C-t1' });
+    const end = step(s, 'system', { type: 'TIMEOUT' });
+    expect(announces(end.events)).toEqual(['confess', 'target', 'survive']);
+    expect(end.events.find((e) => e.announce?.kind === 'confess')!.announce).toEqual({ kind: 'confess', players: [{ id: 'C', revealed: 'not_a_witch' }] });
+    expect(end.events.find((e) => e.announce?.kind === 'survive')!.announce).toMatchObject({ player: 'C', reason: '自首' });
+  });
+
+  it('says nobody is protected when there is no Constable choice, and announces the winner', () => {
+    let s = toNight();
+    s = must(s, 'A', { type: 'WITCH_VOTE', target: 'C' });
+    const dawn = step(s, 'system', { type: 'TIMEOUT' }); // the Constable never chose
+    expect(dawn.events.find((e) => e.announce?.kind === 'protect')!.announce).toEqual({ kind: 'protect', player: null });
+    // The last townsperson dies on trial: with only the witch left, the witches win, shown after the death
+    const t = scenario();
+    for (const id of ['B', 'C']) t.players[id]!.alive = false;
+    setTryals(t, 'D', ['not_a_witch']);
+    const [w] = give(t, 'A', 'witness');
+    const r = step(t, 'A', { type: 'PLAY_CARD', cardId: w!.id, target: 'D' });
+    const r2 = step(r.state, 'A', { type: 'CHOOSE_REVEAL', tryalId: 'D-t0' });
+    expect(r2.state.phase).toMatchObject({ kind: 'game_over', winner: 'witches' });
+    expect(announces(r2.events)).toEqual(['death', 'victory']);
+    expect(r2.events.find((e) => e.announce?.kind === 'victory')!.announce).toEqual({ kind: 'victory', winner: 'witches', witches: ['A'] });
   });
 });
 

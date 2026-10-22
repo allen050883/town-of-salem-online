@@ -766,6 +766,26 @@ button.small {
   font: 600 0.95rem var(--serif);
   padding: 0 0.3rem;
 }
+.replay-controls select {
+  font: inherit;
+  padding: 0.25rem 0.3rem;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+}
+.announce.is-skippable {
+  cursor: pointer;
+}
+.pace input[type='range'] {
+  flex: 1;
+  min-width: 6rem;
+  accent-color: var(--wax);
+}
+.pace-value {
+  min-width: 3.2em;
+  font-variant-numeric: tabular-nums;
+}
 .options select,
 .solo select {
   font: inherit;
@@ -1491,5 +1511,131 @@ button.small {
   }
   .accuse-bar > span {
     transition: none;
+  }
+}
+
+/* ---------- Full-screen announcements: the night's outcome, deaths, the winner ---------- */
+.announce {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  text-align: center;
+  color: #f3f1ec;
+  animation: announce-in 0.35s ease;
+}
+.announce.tone-light {
+  background: radial-gradient(circle at 50% 35%, #3a4f7a, #1c2a47 70%);
+}
+.announce.tone-dark {
+  background: radial-gradient(circle at 50% 35%, #5a1620, #1a0a10 75%);
+}
+.announce.tone-safe {
+  background: radial-gradient(circle at 50% 35%, #2f6b5a, #10261f 75%);
+}
+.announce.tone-town {
+  background: radial-gradient(circle at 50% 35%, #b8862b, #2d4675 80%);
+}
+.announce.tone-witch {
+  background: radial-gradient(circle at 50% 35%, #7b1e2c, #0e1422 80%);
+}
+.announce-card {
+  width: min(36rem, 100%);
+  display: grid;
+  gap: 0.9rem;
+  justify-items: center;
+  animation: announce-pop 0.45s ease;
+}
+.announce-kicker {
+  margin: 0;
+  letter-spacing: 0.4em;
+  font-size: 0.95rem;
+  opacity: 0.8;
+}
+.announce-title {
+  margin: 0;
+  font: 700 clamp(2rem, 9vw, 3.6rem) / 1.2 var(--serif);
+  text-shadow: 0 2px 18px rgb(0 0 0 / 0.45);
+}
+.announce-who {
+  display: grid;
+  gap: 0.5rem;
+  justify-items: center;
+}
+.announce-who b {
+  font: 700 clamp(1.8rem, 8vw, 3rem) var(--serif);
+}
+.announce-who .avatar {
+  border: 3px solid rgb(243 241 236 / 0.85);
+  border-radius: 50%;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.45);
+}
+.announce-who .avatar-fallback {
+  display: grid;
+  place-items: center;
+  font: 700 2.6rem var(--serif);
+  background: rgb(243 241 236 / 0.18);
+}
+.announce-note {
+  margin: 0;
+  font-size: clamp(1rem, 4.2vw, 1.3rem);
+  line-height: 1.7;
+  opacity: 0.92;
+}
+.announce-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+  width: 100%;
+}
+.announce-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.7rem 1.1rem;
+  border-radius: 8px;
+  background: rgb(243 241 236 / 0.14);
+  font-size: clamp(1.1rem, 5vw, 1.5rem);
+}
+.announce-bar {
+  width: min(16rem, 70%);
+  height: 4px;
+  margin-top: 0.6rem;
+  border-radius: 999px;
+  background: rgb(243 241 236 / 0.85);
+  transform-origin: left;
+  animation: announce-bar linear forwards;
+}
+.announce-close {
+  margin-top: 0.8rem;
+  min-width: 10rem;
+}
+@keyframes announce-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes announce-pop {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.96);
+  }
+}
+@keyframes announce-bar {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .announce,
+  .announce-card {
+    animation: none;
   }
 }

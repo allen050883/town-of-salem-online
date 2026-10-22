@@ -40,7 +40,7 @@ export function candidateActions(v: PlayerView): Candidate[] {
         return alive.map((id) => ({ action: { type: 'WITCH_VOTE', target: id }, label: `今晚殺 ${id === v.me ? '你自己' : name(id)}` }));
       }
       if (ph.step === 'constable') {
-        return others.map((id) => ({ action: { type: 'CONSTABLE_GAVEL', target: id }, label: `把法槌交給 ${name(id)}，保護他今晚不死` }));
+        return others.map((id) => ({ action: { type: 'CONSTABLE_GAVEL', target: id }, label: `保護 ${name(id)}（他今晚不會被女巫殺死）` }));
       }
       return confessChoices(v);
     case 'turn': {

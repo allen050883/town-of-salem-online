@@ -5,7 +5,7 @@ import { LogPanel } from './LogPanel';
 import { CardList, PlayerRow, RoleChip, isDark, phaseText } from './Table';
 import { CARD_W, CardFace } from './CardFace';
 import { CARD_DESC } from './text';
-import { EventTicker, IntroSheet, useHits } from './Feedback';
+import { Announcer, BotPaceSetting, EventTicker, IntroSheet, useHits } from './Feedback';
 
 interface Props {
   snap: ClientSnapshot;
@@ -76,7 +76,7 @@ function leftOf(view: PlayerView): PlayerId | null {
 
 export function Game({ snap, view, act, send, error, connection, onLeave }: Props) {
   const [sel, setSel] = useState<Selection>(NONE);
-  const [panel, setPanel] = useState<'none' | 'discard' | 'parris'>('none');
+  const [panel, setPanel] = useState<'none' | 'discard' | 'parris' | 'settings'>('none');
   /** A card whose description is on screen (tap any card, even when it isn't your turn) */
   const [info, setInfo] = useState<CardType | null>(null);
   const [logOpen, setLogOpen] = useState(false);
@@ -190,6 +190,11 @@ export function Game({ snap, view, act, send, error, connection, onLeave }: Prop
           牌堆 {view.deckCount}・棄牌 {view.discardCount}
         </button>
         <Countdown deadline={snap.deadline} />
+        {snap.hostId === view.me && (
+          <button className="ghost small" onClick={() => setPanel(panel === 'settings' ? 'none' : 'settings')} aria-expanded={panel === 'settings'} aria-label="房主設定" title="房主設定">
+            ⚙
+          </button>
+        )}
         <button className="ghost small log-toggle" onClick={() => setLogOpen(!logOpen)} aria-expanded={logOpen}>
           {logOpen ? '牌桌' : '紀錄'}
         </button>
@@ -204,9 +209,18 @@ export function Game({ snap, view, act, send, error, connection, onLeave }: Prop
         </p>
       )}
 
+      <Announcer announce={snap.announce} view={view} pictures={pictures} />
       <Prompt view={view} sel={sel} myTurn={myTurn} spectator={spectator} />
       <EventTicker log={snap.log} onOpen={() => setLogOpen(true)} />
       {!spectator && snap.gameId && ph.kind !== 'game_over' && <IntroSheet key={snap.gameId} gameId={snap.gameId} view={view} />}
+
+      {panel === 'settings' && snap.hostId === view.me && (
+        <section className="panel" aria-label="房主設定">
+          <h2>房主設定（隨時生效）</h2>
+          <BotPaceSetting seconds={snap.botSeconds} send={send} />
+          <p className="muted small-text">電腦每一步動作之間的等待時間；拉長比較看得清楚，縮短遊戲比較快。</p>
+        </section>
+      )}
 
       {panel === 'discard' && (
         <section className="panel" aria-label="棄牌堆">
@@ -382,7 +396,7 @@ function Prompt({ view, sel, myTurn, spectator }: { view: PlayerView; sel: Selec
       case 'night':
         if (ph.step === 'witches')
           text = ph.mustAct ? '夜晚。你是女巫：點一位玩家，決定今晚要殺誰。' : phaseText(view);
-        else if (ph.step === 'constable') text = ph.mustAct ? '你是警長：點一位玩家，把法槌交給他保護他（不能選自己）。' : '夜晚。警長正在行動…';
+        else if (ph.step === 'constable') text = ph.mustAct ? '你是警長：點一位玩家保護他，今晚他不會被女巫殺死（不能選自己）。' : '夜晚。警長正在行動…';
         else text = ph.mustAct ? '天亮前：要自首嗎？點你自己的一張審判牌翻開，換取今晚免死；或按「不自首」。' : '等待其他人決定是否自首…';
         break;
       case 'conspiracy':

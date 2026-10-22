@@ -6,6 +6,7 @@ import type {
   ActionEnvelope,
   Card,
   CardType,
+  Announcement,
   EventFx,
   GameEvent,
   GameState,
@@ -210,8 +211,8 @@ class Game {
 
   // ----- Basic tools -----
 
-  log(text: string, visibleTo?: PlayerId[], fx?: EventFx[]) {
-    this.events.push({ seq: ++this.s.seq, text, ...(visibleTo ? { visibleTo } : {}), ...(fx ? { fx } : {}) });
+  log(text: string, visibleTo?: PlayerId[], fx?: EventFx[], announce?: Announcement) {
+    this.events.push({ seq: ++this.s.seq, text, ...(visibleTo ? { visibleTo } : {}), ...(fx ? { fx } : {}), ...(announce ? { announce } : {}) });
   }
 
   p(id: PlayerId): Player {
@@ -400,16 +401,21 @@ class Game {
     const allTryals = Object.values(this.s.players).flatMap((p) => p.tryals);
     if (allTryals.filter((t) => t.kind === 'witch').every((t) => t.revealed)) {
       this.setPhase({ kind: 'game_over', winner: 'town' });
-      this.log('所有女巫牌都已揭露，鎮民獲勝！');
+      this.log('所有女巫牌都已揭露，鎮民獲勝！', undefined, undefined, { kind: 'victory', winner: 'town', witches: this.everWitches() });
       return true;
     }
     const alive = alivePlayers(this.s);
     if (alive.every((p) => p.everWitch)) {
       this.setPhase({ kind: 'game_over', winner: 'witches' });
-      this.log('存活者全都是女巫，女巫獲勝！');
+      this.log('存活者全都是女巫，女巫獲勝！', undefined, undefined, { kind: 'victory', winner: 'witches', witches: this.everWitches() });
       return true;
     }
     return false;
+  }
+
+  /** Everyone who ever held a Witch card, in seat order */
+  everWitches(): PlayerId[] {
+    return this.s.seats.filter((id) => this.p(id).everWitch);
   }
 
   kill(pid: PlayerId, cause: string) {
@@ -425,7 +431,12 @@ class Game {
     else this.s.discard.push(...pl.hand);
     pl.hand = [];
     pl.front = [];
-    this.log(`${pl.name} 死亡（${cause}）。曾經是女巫：${pl.everWitch ? '是' : '否'}`, undefined, [{ target: pid, label: '死亡' }]);
+    this.log(`${pl.name} 死亡（${cause}）。曾經是女巫：${pl.everWitch ? '是' : '否'}`, undefined, [{ target: pid, label: '死亡' }], {
+      kind: 'death',
+      player: pid,
+      cause,
+      wasWitch: pl.everWitch,
+    });
     // Rulebook: a matched partner dies a split-second later, so decide the win first
     if (this.checkWin()) return;
     if (partner) this.kill(partner, '情侶殉情');
@@ -924,7 +935,7 @@ class Game {
     if (target === me.id) return '警長不能保護自己';
     if (!this.s.players[target]?.alive) return '目標無效';
     ph.gavel = target;
-    this.log(`你把法槌交給了 ${this.name(target)}`, [me.id]);
+    this.log(`你選擇保護 ${this.name(target)}`, [me.id]);
     this.enterConfess();
   }
 
@@ -932,7 +943,13 @@ class Game {
     const ph = this.s.phase;
     if (ph.kind !== 'night') return;
     ph.step = 'confess';
-    this.log('天亮了。在公布死者前，任何人都可以自首（翻開自己一張審判牌，換取今晚免死）');
+    const guarded = ph.gavel;
+    this.log(
+      `天亮了。${guarded ? `警長保護了 ${this.name(guarded)}` : '今晚沒有人受到警長保護'}。在公布死者前，任何人都可以自首（翻開自己一張審判牌，換取今晚免死）`,
+      undefined,
+      undefined,
+      { kind: 'protect', player: guarded },
+    );
   }
 
   confess(me: Player, tryalId: string | undefined): string | undefined {
@@ -944,13 +961,16 @@ class Game {
       if (usesLeft(this.s, me.id, 'phips') <= 0) return '請選自己一張未翻開的審判牌';
       this.useAbility(me, 'phips');
       ph.confessed.push(me.id);
+      (ph.confessKinds ??= {})[me.id] = null;
       ph.passed.push(me.id);
       this.log(`${this.roleLabel(me.id, 'phips')} 選擇自首，不必翻牌`);
       this.maybeResolveNight();
       return;
     }
-    if (!me.tryals.some((t) => t.id === tryalId && !t.revealed)) return '請選自己一張未翻開的審判牌';
+    const turned = me.tryals.find((t) => t.id === tryalId && !t.revealed);
+    if (!turned) return '請選自己一張未翻開的審判牌';
     ph.confessed.push(me.id);
+    (ph.confessKinds ??= {})[me.id] = turned.kind;
     ph.passed.push(me.id);
     this.log(`${me.name} 選擇自首`);
     this.revealTryal(me.id, tryalId, '自首');
@@ -975,21 +995,28 @@ class Game {
   resolveNight() {
     const ph = this.s.phase;
     if (ph.kind !== 'night') return;
-    if (ph.gavel) this.log(`法槌放在 ${this.name(ph.gavel)} 面前`);
+    this.log(
+      ph.confessed.length ? `自首的人：${ph.confessed.map((id) => this.name(id)).join('、')}` : '沒有人自首',
+      undefined,
+      undefined,
+      { kind: 'confess', players: ph.confessed.map((id) => ({ id, revealed: ph.confessKinds?.[id] ?? null })) },
+    );
     const victim = ph.victim ? this.p(ph.victim) : undefined;
     if (victim?.alive) {
+      this.log(`女巫今晚的目標是 ${victim.name}`, undefined, undefined, { kind: 'target', player: victim.id });
       const saved =
         ph.gavel === victim.id
-          ? '法槌保護'
+          ? '警長保護'
           : ph.confessed.includes(victim.id)
             ? '自首'
             : victim.front.some((c) => c.type === 'asylum')
               ? '避難'
               : null;
-      if (saved) this.log(`女巫的目標是 ${victim.name}，但因為${saved}而存活`);
-      else this.kill(victim.id, '夜晚被女巫殺害');
+      if (saved) {
+        this.log(`${victim.name} 因為${saved}而存活`, undefined, [{ target: victim.id, label: '存活' }], { kind: 'survive', player: victim.id, reason: saved });
+      } else this.kill(victim.id, '夜晚被女巫殺害');
     } else {
-      this.log('今晚沒有人死亡');
+      this.log('今晚沒有人死亡', undefined, undefined, { kind: 'peace' });
     }
     if (this.over) return;
 

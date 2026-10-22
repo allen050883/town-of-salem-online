@@ -6,3 +6,4 @@ export * from './reducer';
 export * from './projection';
 export * from './bot';
 export * from './candidates';
+export * from './announce';

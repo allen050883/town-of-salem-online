@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactElement } from 'react';
 import type { PlayerId, PlayerView } from '@salem/engine';
-import type { LogEntry } from '../../server/src/protocol';
+import type { AnnounceItem, LogEntry } from '../../server/src/protocol';
+import { Avatar } from './Avatar';
+import type { Send } from './net';
 
 /** How long a player row stays lit after something happens to it */
 const HIT_MS = 2500;
@@ -72,7 +74,7 @@ const GOALS = {
   },
   constable: {
     name: '警長',
-    goal: '你和鎮民同一陣營，要揪出所有女巫。每天夜晚可以把法槌交給一位玩家保護他（不能給自己）。',
+    goal: '你和鎮民同一陣營，要揪出所有女巫。每天夜晚可以選一位玩家保護他，讓他不會被女巫殺死（不能選自己）。',
   },
   town: {
     name: '平民',
@@ -108,5 +110,188 @@ export function IntroSheet({ gameId, view }: { gameId: string; view: PlayerView 
         </button>
       </section>
     </div>
+  );
+}
+
+const TRYAL_NAME = { witch: '女巫', constable: '警長', not_a_witch: '平民' } as const;
+
+/**
+ * Full-screen cards for the moments everyone must see, one after another: who the Constable protects, who confessed,
+ * whom the Witches went for, who died or lived, and the winner. The server holds the game for as long as they last,
+ * so the screen is covered only while nothing else is happening.
+ */
+export function Announcer({
+  announce: a,
+  view,
+  pictures,
+  onDone,
+  skippable,
+}: {
+  /** A new id starts a new batch from its first card */
+  announce: { id: number | string; items: AnnounceItem[] } | null;
+  view: PlayerView;
+  pictures?: Map<PlayerId, string | undefined>;
+  /** Called when the last card has gone (the replay waits for it before moving on) */
+  onDone?: () => void;
+  /** Tap a card to move on to the next one (the replay; in a live game the table has to wait) */
+  skippable?: boolean;
+}) {
+  const seen = useRef<number | string | null>(null);
+  const [shown, setShown] = useState<{ id: number | string; index: number } | null>(null);
+
+  // A new batch starts from its first card
+  useEffect(() => {
+    if (!a || seen.current === a.id) return;
+    seen.current = a.id;
+    setShown({ id: a.id, index: 0 });
+  }, [a]);
+
+  // Each card steps on after its own time; a card with no time (the winner) waits to be closed
+  useEffect(() => {
+    if (!shown || !a || a.id !== shown.id) return;
+    const item = a.items[shown.index];
+    if (!item) {
+      setShown(null);
+      return onDone?.();
+    }
+    if (item.ms === 0) return;
+    const t = setTimeout(() => setShown({ id: shown.id, index: shown.index + 1 }), item.ms);
+    return () => clearTimeout(t);
+  }, [shown, a]);
+
+  if (!shown || !a || a.id !== shown.id) return null;
+  const item = a.items[shown.index];
+  if (!item) return null;
+  const name = (id: string) => view.players[id]?.name ?? '?';
+  const who = (id: string, size = 88) => (
+    <span className="announce-who">
+      <Avatar name={name(id)} picture={pictures?.get(id)} size={size} />
+      <b>{name(id)}</b>
+    </span>
+  );
+  const close = () => setShown({ id: shown.id, index: shown.index + 1 });
+  const content = describe(item, name, who);
+
+  return (
+    <div
+      className={`announce tone-${content.tone} ${skippable ? 'is-skippable' : ''}`}
+      role="alertdialog"
+      aria-modal="true"
+      aria-live="assertive"
+      aria-label={content.title}
+      onClick={skippable && item.ms > 0 ? close : undefined}
+    >
+      <div key={`${shown.id}-${shown.index}`} className="announce-card">
+        <p className="announce-kicker">{content.kicker}</p>
+        <h2 className="announce-title">{content.title}</h2>
+        {content.body}
+        {item.ms === 0 ? (
+          <button className="primary announce-close" onClick={close} autoFocus>
+            關閉
+          </button>
+        ) : (
+          <span className="announce-bar" style={{ animationDuration: `${item.ms}ms` }} aria-hidden="true" />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function describe(item: AnnounceItem, name: (id: string) => string, who: (id: string, size?: number) => ReactElement) {
+  switch (item.kind) {
+    case 'protect':
+      return {
+        tone: 'light',
+        kicker: '天亮了',
+        title: item.player ? '警長保護了' : '今晚沒有人受到警長保護',
+        body: (
+          <>
+            {item.player && who(item.player)}
+            <p className="announce-note">接下來開始自首：翻開自己一張審判牌，換取今晚免死</p>
+          </>
+        ),
+      };
+    case 'confess':
+      return {
+        tone: 'light',
+        kicker: '自首',
+        title: item.players.length ? `${item.players.length} 人自首` : '沒有人自首',
+        body: item.players.length ? (
+          <ul className="announce-list">
+            {item.players.map((p) => (
+              <li key={p.id}>
+                <b>{name(p.id)}</b>
+                <span>{p.revealed ? `翻開了「${TRYAL_NAME[p.revealed]}」` : '自首（不必翻牌）'}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null,
+      };
+    case 'target':
+      return { tone: 'dark', kicker: '女巫出手', title: '女巫今晚的目標是', body: who(item.player) };
+    case 'survive':
+      return {
+        tone: 'safe',
+        kicker: '倖存',
+        title: `${name(item.player)} 存活`,
+        body: (
+          <>
+            {who(item.player)}
+            <p className="announce-note">因為{item.reason}</p>
+          </>
+        ),
+      };
+    case 'peace':
+      return { tone: 'safe', kicker: '今晚', title: '平安無事', body: <p className="announce-note">沒有人死亡</p> };
+    case 'death':
+      return {
+        tone: 'dark',
+        kicker: '死亡',
+        title: `${name(item.player)} 死亡`,
+        body: (
+          <>
+            {who(item.player)}
+            <p className="announce-note">
+              原因：{item.cause}
+              <br />
+              曾經是女巫：{item.wasWitch ? '是' : '否'}
+            </p>
+          </>
+        ),
+      };
+    case 'victory':
+      return {
+        tone: item.winner === 'town' ? 'town' : 'witch',
+        kicker: '遊戲結束',
+        title: item.winner === 'town' ? '鎮民獲勝' : '女巫獲勝',
+        body: <p className="announce-note">女巫是：{item.witches.map((id) => name(id)).join('、') || '（無）'}</p>,
+      };
+  }
+}
+
+/** How long a computer player waits before each move; the host can change it at any time, even mid-game */
+export function BotPaceSetting({ seconds, send, disabled }: { seconds: number; send: Send; disabled?: boolean }) {
+  const [local, setLocal] = useState(seconds);
+  // Follow changes made elsewhere (another host tab, a new snapshot)
+  useEffect(() => setLocal(seconds), [seconds]);
+  const commit = () => local !== seconds && send('botPace', { seconds: local });
+  return (
+    <label className="check pace">
+      <span>電腦動作間隔</span>
+      <input
+        type="range"
+        min={1}
+        max={10}
+        step={0.5}
+        value={local}
+        disabled={disabled}
+        onChange={(e) => setLocal(Number(e.target.value))}
+        onPointerUp={commit}
+        onKeyUp={commit}
+        onBlur={commit}
+        aria-valuetext={`${local} 秒`}
+      />
+      <b className="pace-value">{local} 秒</b>
+    </label>
   );
 }

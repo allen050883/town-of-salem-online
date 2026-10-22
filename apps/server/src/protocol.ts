@@ -1,5 +1,5 @@
 /** Messages and payloads shared by the server and the web client (type-only imports on the client) */
-import type { Action, ActionEnvelope, EventFx, GameOptions, PlayerId, PlayerView, SeatInput, Winner } from '@salem/engine';
+import type { Action, ActionEnvelope, AnnounceItem, EventFx, GameOptions, PlayerId, PlayerView, SeatInput, Winner } from '@salem/engine';
 
 export type Channel = 'public' | 'witch' | 'dead' | 'spectator' | 'system';
 
@@ -26,6 +26,8 @@ export interface Member {
   bot?: boolean;
 }
 
+export type { AnnounceItem };
+
 /** Payload pushed to each client */
 export interface ClientSnapshot {
   roomCode: string;
@@ -38,12 +40,16 @@ export interface ClientSnapshot {
   options: GameOptions;
   /** Seats in this game chosen by the host (4–12); null = whoever is seated plays. Empty seats are filled with computer players at the start */
   seatCount: number | null;
+  /** Seconds a computer player takes per move (the host can change it any time) */
+  botSeconds: number;
   view: PlayerView | null;
   log: LogEntry[];
   /** Phase deadline (epoch ms) */
   deadline: number | null;
   /** Dead players' remaining last words */
   lastWordsLeft: number | null;
+  /** Full-screen cards to show in order while the game waits (the night's outcome, deaths, the winner); null when there is nothing to show */
+  announce: { id: number; items: AnnounceItem[] } | null;
   /** The last finished game in this room, viewable as a replay */
   lastReplayId: string | null;
   /** The game in progress, null in the lobby */
@@ -72,6 +78,8 @@ export interface ClientMessages {
   options: Partial<GameOptions>;
   /** Host only, in the lobby: how many seats this game has (null = no fixed number) */
   seatCount: { count: number | null };
+  /** Host only, any time: seconds a computer player waits before each move */
+  botPace: { seconds: number };
   /** Spectator takes a free seat / player moves to the spectator benches (lobby only) */
   seat: { spectate: boolean };
   /** Host only, in the lobby: add computer players / remove one */

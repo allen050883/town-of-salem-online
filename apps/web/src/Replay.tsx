@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { createGame, eventsFor, projectFor, reduce, type GameEvent, type GameState, type PlayerId } from '@salem/engine';
+import { announceItems, createGame, eventsFor, projectFor, reduce, type AnnounceItem, type GameEvent, type GameState, type PlayerId } from '@salem/engine';
 import type { ReplayRecord } from '../../server/src/protocol';
 import { StaticTown, isDark, phaseText } from './Table';
+import { Announcer, type Hit } from './Feedback';
 
 const OMNISCIENT = '__all__';
 
@@ -38,17 +39,32 @@ export function Replay({ record, onClose }: { record: ReplayRecord; onClose: () 
   const [step, setStep] = useState(0);
   const [who, setWho] = useState<PlayerId>(OMNISCIENT);
   const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState(1);
+  /** The full-screen cards for the step just played (the same ones the live game shows); the replay waits for them */
+  const [announce, setAnnounce] = useState<{ id: string; items: AnnounceItem[] } | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
+  /** Go to a step. Moving forward one step plays that step's announcements; any other jump just goes there */
+  const goTo = (i: number) => {
+    const next = Math.max(0, Math.min(last, i));
+    if (next === step + 1) {
+      const list = (tl.events[next] ?? []).flatMap((e) => (e.announce ? [e.announce] : []));
+      const items = announceItems(list).map((it) => (it.ms ? { ...it, ms: Math.max(1200, Math.round(it.ms / speed)) } : it));
+      setAnnounce(items.length ? { id: `${next}-${Date.now()}`, items } : null);
+    } else setAnnounce(null);
+    setStep(next);
+  };
+
+  // Autoplay: one step at a time; while a full-screen card is up it waits, then pauses a beat before the next step
   useEffect(() => {
-    if (!playing) return;
+    if (!playing || announce) return;
     if (step >= last) {
       setPlaying(false);
       return;
     }
-    const t = setTimeout(() => setStep((s) => Math.min(s + 1, last)), 900);
+    const t = setTimeout(() => goTo(step + 1), 1800 / speed);
     return () => clearTimeout(t);
-  }, [playing, step, last]);
+  }, [playing, step, last, speed, announce]);
 
   useEffect(() => {
     const el = logRef.current;
@@ -79,6 +95,16 @@ export function Replay({ record, onClose }: { record: ReplayRecord; onClose: () 
   }, [step, who, omniscient, tl, record.chat, state]);
 
   const action = step > 0 ? record.actions[step - 1] : null;
+
+  // Whoever something just happened to lights up, like in the live game
+  const hits = useMemo(() => {
+    const out = new Map<PlayerId, Hit>();
+    for (const e of tl.events[step] ?? []) {
+      for (const f of e.fx ?? []) out.set(f.target, { label: out.has(f.target) ? `${out.get(f.target)!.label}・${f.label}` : f.label, key: step });
+    }
+    return out;
+  }, [tl, step]);
+  const recent = lines.filter((l) => !l.chat).slice(-2);
 
   const download = () => {
     const blob = new Blob([JSON.stringify(record)], { type: 'application/json' });
@@ -116,11 +142,20 @@ export function Replay({ record, onClose }: { record: ReplayRecord; onClose: () 
         </button>
       </header>
 
+      <Announcer announce={announce} view={view} onDone={() => setAnnounce(null)} skippable />
       <p className="prompt" role="status">
         <span>
-          第 {step} / {last} 步{action ? `（${fmtTime(action.at)}）` : ''}。{phaseText(view)}
+          第 {step} / {last} 步{action ? `（${fmtTime(action.at)}）` : ''}。牌堆 {view.deckCount}・棄牌 {view.discardCount}。{phaseText(view)}
         </span>
       </p>
+      {recent.length > 0 && (
+        <p className="ticker" aria-label="最新動態">
+          {recent.length === 2 && <span className="ticker-old">{recent[0]!.text}</span>}
+          <span key={recent.at(-1)!.key} className="ticker-new">
+            {recent.at(-1)!.text}
+          </span>
+        </p>
+      )}
       {tl.brokenAt !== null && (
         <p className="banner" role="alert">
           這份紀錄只能重播到第 {tl.brokenAt} 步（可能是用不同版本的規則記錄的）。
@@ -128,7 +163,7 @@ export function Replay({ record, onClose }: { record: ReplayRecord; onClose: () 
       )}
 
       <div className="board">
-        <StaticTown view={view} />
+        <StaticTown view={view} hits={hits} />
         <aside className="log">
           <div className="log-scroll" aria-live="polite" ref={logRef}>
             {lines.map((l) => (
@@ -147,19 +182,26 @@ export function Replay({ record, onClose }: { record: ReplayRecord; onClose: () 
       </div>
 
       <footer className="hand-bar replay-controls">
-        <button className="small" onClick={() => setStep(0)} disabled={step === 0} aria-label="回到開頭">
+        <button className="small" onClick={() => goTo(0)} disabled={step === 0} aria-label="回到開頭">
           ⏮
         </button>
-        <button className="small" onClick={() => setStep(Math.max(0, step - 1))} disabled={step === 0} aria-label="上一步">
+        <button className="small" onClick={() => goTo(step - 1)} disabled={step === 0} aria-label="上一步">
           ◀
         </button>
-        <button className="primary small" onClick={() => setPlaying(!playing)} disabled={step >= last && !playing}>
+        <button
+          className="primary small"
+          onClick={() => {
+            // Playing again from the end starts over
+            if (!playing && step >= last) goTo(0);
+            setPlaying(!playing);
+          }}
+        >
           {playing ? '暫停' : '播放'}
         </button>
-        <button className="small" onClick={() => setStep(Math.min(last, step + 1))} disabled={step >= last} aria-label="下一步">
+        <button className="small" onClick={() => goTo(step + 1)} disabled={step >= last} aria-label="下一步">
           ▶
         </button>
-        <button className="small" onClick={() => setStep(last)} disabled={step >= last} aria-label="跳到結尾">
+        <button className="small" onClick={() => goTo(last)} disabled={step >= last} aria-label="跳到結尾">
           ⏭
         </button>
         <input
@@ -167,10 +209,17 @@ export function Replay({ record, onClose }: { record: ReplayRecord; onClose: () 
           min={0}
           max={last}
           value={step}
-          onChange={(e) => setStep(Number(e.target.value))}
+          onChange={(e) => goTo(Number(e.target.value))}
           aria-label="重播進度"
           className="scrubber"
         />
+        <select value={speed} onChange={(e) => setSpeed(Number(e.target.value))} aria-label="播放速度">
+          {[0.5, 1, 2, 4].map((x) => (
+            <option key={x} value={x}>
+              {x}x
+            </option>
+          ))}
+        </select>
       </footer>
     </div>
   );

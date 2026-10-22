@@ -3,6 +3,7 @@ import { MAX_PLAYERS, MIN_PLAYERS, ROLE_CHOICE_MAX_PLAYERS } from '@salem/engine
 import type { ReplayRecord, ReplaySummary } from '../../server/src/protocol';
 import { fetchReplay, fetchReplayList, loginUrl, useAuthConfig, useSalem, type ClientSnapshot, type Salem } from './net';
 import { Avatar } from './Avatar';
+import { BotPaceSetting } from './Feedback';
 import { Game } from './Game';
 import { LogPanel } from './LogPanel';
 import { Replay } from './Replay';
@@ -278,6 +279,7 @@ function Lobby({ salem, snap }: { salem: Salem; snap: ClientSnapshot }) {
               ))}
             </select>
           </label>
+          <BotPaceSetting seconds={snap.botSeconds} send={send} />
           {snap.seatCount !== null && <p className="muted small-text">開始時，空著的座位會由電腦玩家補滿；坐滿後再進來的人會變成觀戰。</p>}
           <label className="check">
             <input type="checkbox" checked={snap.options.roles} onChange={(e) => setOptions({ roles: e.target.checked })} />

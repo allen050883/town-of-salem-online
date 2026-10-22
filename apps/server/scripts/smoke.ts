@@ -104,7 +104,9 @@ async function main() {
     room.onMessage('error', (e: { message: string }) => {
       errors++;
       if (errors < 5) console.log(`bot${i} error:`, e.message);
-      act(i);
+      // The server holds the table while full-screen announcements play: try again a moment later
+      if (e.message.includes('請稍候')) setTimeout(() => act(i), 500);
+      else act(i);
     });
     room.onMessage('snapshot', (s: ClientSnapshot) => {
       const v = s.view;

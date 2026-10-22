@@ -259,6 +259,33 @@ function describe(item: AnnounceItem, name: (id: string) => string, who: (id: st
           </>
         ),
       };
+    case 'conspiracy':
+      return {
+        tone: 'dark',
+        kicker: '傳染',
+        title: '傳染！',
+        body: (
+          <>
+            {who(item.drawer)}
+            <p className="announce-note">
+              抽到了「傳染」
+              <br />
+              {item.catHolder === null
+                ? '目前沒有人持有黑貓'
+                : item.immune
+                  ? `黑貓在 ${name(item.catHolder)} 面前，但對他無效，不必翻牌`
+                  : `黑貓在 ${name(item.catHolder)} 面前：他要先翻開自己一張審判牌`}
+            </p>
+          </>
+        ),
+      };
+    case 'conspiracyPass':
+      return {
+        tone: 'dark',
+        kicker: '傳染',
+        title: '輪流拿牌',
+        body: <p className="announce-note">每個人從自己左手邊的玩家，拿走一張蓋著的審判牌。拿到女巫牌的人就變成女巫。</p>,
+      };
     case 'victory':
       return {
         tone: item.winner === 'town' ? 'town' : 'witch',

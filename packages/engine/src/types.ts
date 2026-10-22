@@ -192,7 +192,11 @@ export type Announcement =
   | { kind: 'survive'; player: PlayerId; reason: string }
   | { kind: 'peace' }
   | { kind: 'death'; player: PlayerId; cause: string; wasWitch: boolean }
-  | { kind: 'victory'; winner: Winner; witches: PlayerId[] };
+  | { kind: 'victory'; winner: Winner; witches: PlayerId[] }
+  /** Someone drew the Conspiracy: the black cat holder (if any, unless immune) reveals a card first */
+  | { kind: 'conspiracy'; drawer: PlayerId; catHolder: PlayerId | null; immune: boolean }
+  /** Everyone now takes a tryal card from the player on their left */
+  | { kind: 'conspiracyPass' };
 
 /** Log event; visibleTo omitted means public */
 export interface GameEvent {

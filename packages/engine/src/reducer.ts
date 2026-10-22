@@ -853,8 +853,13 @@ class Game {
       return;
     }
     this.s.discard.push(card);
-    this.log(`${this.name(this.s.turn.player)} 抽到「傳染」！`);
     const cat = blackCatHolder(this.s);
+    this.log(`${this.name(this.s.turn.player)} 抽到「傳染」！`, undefined, undefined, {
+      kind: 'conspiracy',
+      drawer: this.s.turn.player,
+      catHolder: cat?.id ?? null,
+      immune: !!cat && this.has(cat.id, 'mary'),
+    });
     if (cat && this.has(cat.id, 'mary')) {
       this.log(`黑貓對 ${this.roleLabel(cat.id, 'mary')} 無效`);
       this.startConspiracyPass();
@@ -870,7 +875,7 @@ class Game {
 
   startConspiracyPass() {
     this.setPhase({ kind: 'conspiracy', picks: {} });
-    this.log('傳染：每個人從左手邊玩家拿走一張蓋著的審判牌');
+    this.log('傳染：每個人從左手邊玩家拿走一張蓋著的審判牌', undefined, undefined, { kind: 'conspiracyPass' });
     if (conspiracyPickers(this.s).length === 0) this.resolveConspiracy();
   }
 

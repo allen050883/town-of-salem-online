@@ -233,6 +233,34 @@ describe('night announcements', () => {
   });
 });
 
+describe('conspiracy announcements', () => {
+  const run = (s: ReturnType<typeof scenario>, actor: string, action: Parameters<typeof must>[2]) => {
+    const r = reduce(s, { actor, action });
+    if (!r.ok) throw new Error(r.error);
+    return r;
+  };
+  const kinds = (events: { announce?: { kind: string } }[]) => events.flatMap((e) => (e.announce ? [e.announce.kind] : []));
+
+  it('announces the draw and the black cat, then the card taking once the black cat holder has revealed', () => {
+    const s = scenario();
+    s.deck = [card('conspiracy'), card('accusation'), card('night')];
+    const drew = run(s, 'A', { type: 'DRAW' });
+    expect(kinds(drew.events)).toEqual(['conspiracy']);
+    expect(drew.events.find((e) => e.announce?.kind === 'conspiracy')!.announce).toEqual({ kind: 'conspiracy', drawer: 'A', catHolder: 'A', immune: false });
+    const revealed = run(drew.state, 'A', { type: 'CHOOSE_REVEAL', tryalId: 'A-t1' });
+    expect(kinds(revealed.events)).toEqual(['conspiracyPass']);
+  });
+
+  it('shows both cards at once when the black cat has no effect (Mary Warren)', () => {
+    const s = scenario();
+    s.players.A!.role = 'mary';
+    s.deck = [card('conspiracy'), card('accusation'), card('night')];
+    const drew = run(s, 'A', { type: 'DRAW' });
+    expect(kinds(drew.events)).toEqual(['conspiracy', 'conspiracyPass']);
+    expect(drew.events.find((e) => e.announce?.kind === 'conspiracy')!.announce).toMatchObject({ catHolder: 'A', immune: true });
+  });
+});
+
 describe('conspiracy', () => {
   it('first reveal one of the black cat holder\'s cards, then everyone takes one from the left; whoever gets a witch card becomes a Witch', () => {
     let s = scenario();

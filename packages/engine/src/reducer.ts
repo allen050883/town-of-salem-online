@@ -582,6 +582,9 @@ class Game {
     let got = 0;
     const setAside: Card[] = [];
     while (got < count) {
+      // The Night card at the bottom never comes out through an ability, and the deck is not refilled from the discard pile
+      // for one: with only the Night left the ability draws nothing more, so the next normal draw brings the night down
+      if (this.deckTopLength() === 0) break;
       const c = this.drawOne();
       if (!c) break;
       if (CARD_COLOR[c.type] === 'black') {

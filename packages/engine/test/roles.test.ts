@@ -105,6 +105,38 @@ describe('accusation characters', () => {
     expect(s.deck.at(-1)!.type).toBe('night');
   });
 
+  it('an ability draw never uses up the Night card: nothing is drawn past it and the deck is not refilled', () => {
+    // Only the Night card is left: Ann draws nothing, the discard pile stays put, and the next normal draw is the night
+    let s = withRoles(scenario(), { A: 'ann' });
+    s.deck = [card('night')];
+    s.discard = [card('arson'), card('alibi'), card('accusation')];
+    const [w] = give(s, 'A', 'witness');
+    s = must(s, 'A', { type: 'PLAY_CARD', cardId: w!.id, target: 'C' });
+    expect(s.players.A!.hand).toEqual([]);
+    expect(s.deck.map((c) => c.type)).toEqual(['night']);
+    expect(s.discard.length).toBe(3);
+
+    // One card above the Night: Ann gets that one (she asked for two) and the Night stays at the bottom
+    let t = withRoles(scenario(), { A: 'ann' });
+    t.deck = [card('arson'), card('night')];
+    t.discard = [card('alibi'), card('accusation')];
+    const [w2] = give(t, 'A', 'witness');
+    t = must(t, 'A', { type: 'PLAY_CARD', cardId: w2!.id, target: 'C' });
+    expect(t.players.A!.hand.map((c) => c.type)).toEqual(['arson']);
+    expect(t.deck.map((c) => c.type)).toEqual(['night']);
+    expect(t.discard.length).toBe(2);
+
+    // Rebecca too
+    let u = withRoles(scenario(), { D: 'rebecca' });
+    u.deck = [card('night')];
+    u.discard = [card('arson'), card('alibi')];
+    const [w3] = give(u, 'A', 'witness');
+    u = must(u, 'A', { type: 'PLAY_CARD', cardId: w3!.id, target: 'C' });
+    u = must(u, 'A', { type: 'CHOOSE_REVEAL', tryalId: 'C-t0' });
+    expect(u.players.D!.hand).toEqual([]);
+    expect(u.deck.map((c) => c.type)).toEqual(['night']);
+  });
+
   it('Rebecca Nurse: draws 1 when someone else is revealed by a trial', () => {
     let s = withRoles(scenario(), { D: 'rebecca' });
     s.deck = [card('arson'), card('night')];

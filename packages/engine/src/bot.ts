@@ -169,7 +169,7 @@ class Bot {
     if (!guarded && v.myAbilities.phips && this.chance(0.35)) return { type: 'CONFESS' };
     const hidden = this.me.tryals.filter((t) => !t.revealed);
     const innocent = hidden.filter((t) => t.kind === 'not_a_witch');
-    if (!guarded && hidden.length >= 2 && innocent.length && this.chance(v.amWitch ? 0.1 : hidden.length >= 4 ? 0.5 : hidden.length === 3 ? 0.35 : 0.15)) {
+    if (!guarded && hidden.length >= 2 && innocent.length && this.chance(v.amWitch ? 0.2 : hidden.length >= 4 ? 0.75 : hidden.length === 3 ? 0.55 : 0.3)) {
       return { type: 'CONFESS', tryalId: this.pick(innocent)!.id };
     }
     return { type: 'NIGHT_PASS' };

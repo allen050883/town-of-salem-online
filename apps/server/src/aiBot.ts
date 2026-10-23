@@ -233,7 +233,15 @@ export function describeClues(v: PlayerView, plays: Play[]): string {
   return clueBlock(out);
 }
 
-export function buildMessages(v: PlayerView, history: string[], plays: Play[], menu: Candidate[], notes: string[] = []) {
+/** The reply-format paragraph differs by mode: thinking mode analyses in up to 80 characters, fast mode in about 15 */
+const REPLY_FORMAT_MARK = '回覆格式：只回 JSON。';
+const FAST_REPLY_FORMAT = `回覆格式：只回 JSON。reason 用 15 字以內的中文簡述（誰、為什麼），再寫選項編號，例如 {"reason":"Bob 未翻開牌最多","choice":3}`;
+export function systemPrompt(mode: AiMode): string {
+  if (mode !== 'fast') return SYSTEM;
+  return SYSTEM.slice(0, SYSTEM.indexOf(REPLY_FORMAT_MARK)) + FAST_REPLY_FORMAT;
+}
+
+export function buildMessages(v: PlayerView, history: string[], plays: Play[], menu: Candidate[], notes: string[] = [], mode: AiMode = DEFAULT_MODE) {
   const clues = describeClues(v, plays);
   const user = [
     describeView(v),
@@ -250,7 +258,7 @@ export function buildMessages(v: PlayerView, history: string[], plays: Play[], m
     ...menu.map((c, i) => `${i + 1}. ${c.label}`),
   ].join('\n');
   return [
-    { role: 'system', content: SYSTEM },
+    { role: 'system', content: systemPrompt(mode) },
     { role: 'user', content: user },
   ];
 }
@@ -280,8 +288,10 @@ export interface AiAnswer {
  */
 export type AiMode = 'fast' | 'think';
 const THINK_TIMEOUT_MS = 300_000;
+/** Fast mode answers with a very short reason, so a small cap keeps each answer around a second */
+const FAST_TOKENS = 120;
 const MODE_SETTINGS: Record<AiMode, { think: string | false; timeoutMs: number; numPredict: number }> = {
-  fast: { think: false, timeoutMs: THINK ? 15_000 : TIMEOUT_MS, numPredict: THINK ? 320 : MAX_ANSWER_TOKENS },
+  fast: { think: false, timeoutMs: THINK ? 15_000 : TIMEOUT_MS, numPredict: THINK ? FAST_TOKENS : Number(process.env.OLLAMA_NUM_PREDICT) || FAST_TOKENS },
   think: { think: THINK || 'low', timeoutMs: THINK ? TIMEOUT_MS : THINK_TIMEOUT_MS, numPredict: Number(process.env.OLLAMA_NUM_PREDICT) || 8000 },
 };
 /** Scripts that set OLLAMA_THINK keep thinking on by default; the live game starts in fast mode */
@@ -349,7 +359,7 @@ const STAGE1_SYSTEM = `你是桌遊《獵巫鎮 1692》（Salem 1692）的玩家
 - 結束回合：已經出過牌，沒有更值得出的牌時。
 - 鎮民偏向自保，但不能一直不動（鎮民要靠審判才會贏）；沒有線索時照「打未翻開牌最多的人」的平均分散做法。女巫要積極，每回合都要推進一件事。
 
-回覆格式：只回 JSON，例如 {"reason":"手上有證據，Bob 未翻開牌最多","choice":2}。reason 用 20 字以內的中文。`;
+回覆格式：只回 JSON，例如 {"reason":"手上有證據","choice":2}。reason 用 8 字以內的中文。`;
 
 function briefView(v: PlayerView, plays: Play[], notes: string[], options: string[]): string {
   const me = v.players[v.me]!;
@@ -422,7 +432,7 @@ export async function aiChoose(v: PlayerView, history: string[], plays: Play[], 
 
   // Stage two (and every other kind of decision): the full picture and the list of actions
   const options = pool.map((i) => menu[i]!);
-  const messages = buildMessages(v, history, plays, options, notes);
+  const messages = buildMessages(v, history, plays, options, notes, mode);
   const answer = await askModel(messages, options.length, who, mode);
   if (!answer) return null;
   const choice = pool[answer.choice]!;

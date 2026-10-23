@@ -37,7 +37,7 @@ const DISCONNECTED_SECONDS = 5;
 /** An empty room survives this long so players can refresh or reconnect */
 const EMPTY_ROOM_MS = { lobby: 30_000, game: 10 * 60_000 };
 /** Seconds a computer player takes per move: the host can change it (this is the default and the allowed range) */
-const BOT_SECONDS = { default: 4, min: 1, max: 10 } as const;
+const BOT_SECONDS = { default: 1, min: 1, max: 10 } as const;
 /** Computer players get friendly Chinese nicknames (a full table of 12 needs at least 11) */
 const BOT_NAMES = ['小明', '小華', '小美', '阿強', '小芳', '阿德', '小玲', '阿志', '小傑', '阿珠', '小雯', '阿豪'];
 

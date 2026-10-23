@@ -339,7 +339,7 @@ export function BotModeSetting({ mode, available, send, disabled }: { mode: 'fas
         {pick('fast')}
         {pick('think')}
       </span>
-      <span className="muted small-text">{mode === 'fast' ? '每一步約 3 秒' : '電腦會先深思再出手，每一步可能要 30~90 秒，很吃顯卡'}</span>
+      <span className="muted small-text">{mode === 'fast' ? '每一步約 1 秒' : '電腦會先深思再出手，每一步可能要 30~90 秒，很吃顯卡'}</span>
     </div>
   );
 }

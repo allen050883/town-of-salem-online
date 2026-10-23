@@ -164,12 +164,12 @@ class Bot {
       const target = this.pick(pool.length ? pool : this.others)!;
       return { type: 'CONSTABLE_GAVEL', target };
     }
-    // Confession: only ever reveal a card that isn't a Witch card, and never when the Constable already protects me
+    // Confession: a town player with plenty of cards left can afford one, so the more cards the likelier. Only ever reveal a card that isn't a Witch card, and never when the Constable already protects me
     const guarded = v.phase.kind === 'night' && v.phase.gavel === v.me;
     if (!guarded && v.myAbilities.phips && this.chance(0.35)) return { type: 'CONFESS' };
     const hidden = this.me.tryals.filter((t) => !t.revealed);
     const innocent = hidden.filter((t) => t.kind === 'not_a_witch');
-    if (!guarded && hidden.length >= 2 && innocent.length && this.chance(v.amWitch ? 0.1 : 0.15)) {
+    if (!guarded && hidden.length >= 2 && innocent.length && this.chance(v.amWitch ? 0.1 : hidden.length >= 4 ? 0.5 : hidden.length === 3 ? 0.35 : 0.15)) {
       return { type: 'CONFESS', tryalId: this.pick(innocent)!.id };
     }
     return { type: 'NIGHT_PASS' };

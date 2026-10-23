@@ -3,8 +3,12 @@ import { useEffect, useState } from 'react';
 /** Sound effects are synthesised in the browser (no audio files); the background music is a quiet looping pad. Both can be muted and are remembered per device. */
 export type Sfx = 'turn' | 'night' | 'protect' | 'confess' | 'target' | 'survive' | 'peace' | 'death' | 'victory' | 'conspiracy' | 'conspiracyPass';
 
-export type Track = 'eerie' | 'fog' | 'church' | 'calm';
-export const TRACKS: { id: Track; name: string }[] = [
+export type Track = 'eerie' | 'fog' | 'church' | 'calm' | 'loop' | 'ambient' | 'haunted';
+/** Tracks with a file are recordings (CC0, see docs/credits.md); the others are synthesised in the browser */
+export const TRACKS: { id: Track; name: string; file?: string }[] = [
+  { id: 'haunted', name: '鬧鬼海灘（錄音）', file: 'haunted.mp3' },
+  { id: 'ambient', name: '詭異環境音（錄音）', file: 'ambient.mp3' },
+  { id: 'loop', name: '陰森循環（錄音）', file: 'creepyloop.mp3' },
   { id: 'eerie', name: '陰森低鳴' },
   { id: 'fog', name: '迷霧' },
   { id: 'church', name: '荒廢教堂' },
@@ -18,7 +22,7 @@ interface Prefs {
 }
 
 const KEY = 'salem.audio';
-let prefs: Prefs = { sfx: true, music: false, track: 'eerie' };
+let prefs: Prefs = { sfx: true, music: false, track: 'haunted' };
 try {
   const raw = localStorage.getItem(KEY);
   if (raw) prefs = { ...prefs, ...JSON.parse(raw) };
@@ -138,7 +142,7 @@ let chordIndex = 0;
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 
 /** One round of the chosen track; each lasts about as long as its interval, and rounds overlap a little */
-const TRACK_PLAY: Record<Track, { every: number; play: (c: AudioContext, out: AudioNode, t: number) => void }> = {
+const TRACK_PLAY: Record<'eerie' | 'fog' | 'church' | 'calm', { every: number; play: (c: AudioContext, out: AudioNode, t: number) => void }> = {
   // A deep drone with a beating minor second, a tritone underneath, and now and then a thin high bell out of tune
   eerie: {
     every: 8000,
@@ -176,12 +180,18 @@ const TRACK_PLAY: Record<Track, { every: number; play: (c: AudioContext, out: Au
   },
 };
 
-function chord(c: AudioContext) {
+function chord(c: AudioContext, track: keyof typeof TRACK_PLAY) {
   if (!musicBus) return;
-  TRACK_PLAY[prefs.track].play(c, musicBus, c.currentTime + 0.05);
+  TRACK_PLAY[track].play(c, musicBus, c.currentTime + 0.05);
 }
 
+let player: HTMLAudioElement | null = null;
+
 export function stopMusic() {
+  if (player) {
+    player.pause();
+    player = null;
+  }
   if (musicTimer) {
     clearInterval(musicTimer);
     musicTimer = null;
@@ -191,13 +201,24 @@ export function stopMusic() {
 }
 
 function syncMusic() {
-  if (prefs.music && !musicTimer) {
+  if (prefs.music && !musicTimer && !player) {
+    const file = TRACKS.find((t) => t.id === prefs.track)?.file;
+    if (file) {
+      player = new Audio(`${import.meta.env.BASE_URL}music/${file}`);
+      player.loop = true;
+      player.volume = 0.5;
+      player.play().catch(() => {
+        player = null; // blocked until the next tap
+      });
+      return;
+    }
     const c = audio();
     if (!c) return;
+    const synth = prefs.track as keyof typeof TRACK_PLAY;
     musicBus = c.createGain();
     musicBus.connect(c.destination);
-    chord(c);
-    musicTimer = setInterval(() => chord(c), TRACK_PLAY[prefs.track].every);
+    chord(c, synth);
+    musicTimer = setInterval(() => chord(c, synth), TRACK_PLAY[synth].every);
   } else if (!prefs.music) {
     stopMusic();
   }

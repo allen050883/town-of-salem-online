@@ -42,6 +42,12 @@ export interface ClientSnapshot {
   seatCount: number | null;
   /** Seconds a computer player takes per move (the host can change it any time) */
   botSeconds: number;
+  /** How hard the computers think (the host chooses, any time); only matters when the server has a model */
+  botMode: 'fast' | 'think';
+  /** Whether the server has a model for the computers (otherwise they play with the built-in strategy) */
+  aiAvailable: boolean;
+  /** Players the computer is playing for (the player turned "AI plays for me" on) */
+  autoPlayers: PlayerId[];
   view: PlayerView | null;
   log: LogEntry[];
   /** Phase deadline (epoch ms) */
@@ -80,6 +86,10 @@ export interface ClientMessages {
   seatCount: { count: number | null };
   /** Host only, any time: seconds a computer player waits before each move */
   botPace: { seconds: number };
+  /** Host only, any time: how hard the computers think */
+  botMode: { mode: 'fast' | 'think' };
+  /** A seated player turns "AI plays for me" on or off */
+  autoplay: { on: boolean };
   /** Spectator takes a free seat / player moves to the spectator benches (lobby only) */
   seat: { spectate: boolean };
   /** Host only, in the lobby: add computer players / remove one */

@@ -53,6 +53,8 @@ export interface RowProps {
   onFront: (c: Card) => void;
   offline?: boolean;
   bot?: boolean;
+  /** A human whose moves the computer makes ("AI plays for me") */
+  auto?: boolean;
   /** LINE profile picture */
   picture?: string;
   /** During a conspiracy: this is the player on the viewer's left */
@@ -98,6 +100,7 @@ export function PlayerRow(props: RowProps) {
           {!p.alive && <span className="tag">{p.isWitch ? '已死・女巫' : '已死'}</span>}
           {props.offline && <span className="tag offline">離線</span>}
           {props.bot && <span className="tag">電腦</span>}
+          {props.auto && <span className="tag">AI 代打</span>}
           {props.isLeft && <span className="tag left">你的左手邊</span>}
           {acting && <span className="tag acting">{isMe ? '輪到你' : '行動中'}</span>}
         </span>

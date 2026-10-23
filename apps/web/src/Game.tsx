@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import { CARD_COLOR, CARD_NAME, PARRIS_MAX, ROLES, SALVAGE_MAX, type Action, type Card, type CardType, type PlayerId, type PlayerView } from '@salem/engine';
+import { CARD_COLOR, CARD_NAME, PARRIS_MAX, ROLES, SALVAGE_MAX, candidateActions, type Action, type Card, type CardType, type PlayerId, type PlayerView } from '@salem/engine';
 import type { ClientSnapshot, Connection, Send } from './net';
 import { LogPanel } from './LogPanel';
 import { CardList, PlayerRow, RoleChip, isDark, phaseText } from './Table';
 import { CARD_W, CardFace } from './CardFace';
 import { CARD_DESC } from './text';
-import { Announcer, BotPaceSetting, EventTicker, IntroSheet, useHits } from './Feedback';
+import { Announcer, BotModeSetting, BotPaceSetting, EventTicker, IntroSheet, useHits } from './Feedback';
 
 interface Props {
   snap: ClientSnapshot;
@@ -172,6 +172,19 @@ export function Game({ snap, view, act, send, error, connection, onLeave }: Prop
 
   const canTriggerAbility = myTurn && view.turn.mode === 'idle';
 
+  // Nudge the button that is the next thing to do when there is nothing else worth doing, or when the turn has gone quiet
+  const autoOn = snap.autoPlayers.includes(view.me);
+  const hasAction = myTurn && candidateActions(view).some((c) => c.action.type !== 'DRAW' && c.action.type !== 'END_TURN');
+  const [quiet, setQuiet] = useState(false);
+  useEffect(() => {
+    setQuiet(false);
+    if (!(myTurn && view.turn.mode === 'playing')) return;
+    const t = setTimeout(() => setQuiet(true), 8000);
+    return () => clearTimeout(t);
+  }, [myTurn, view.turn.mode, view.myHand.length, sel.card?.id]);
+  const nudgeDraw = canTriggerAbility && !hasAction && !autoOn;
+  const nudgeEnd = myTurn && view.turn.mode === 'playing' && (!hasAction || quiet) && !sel.card && !autoOn;
+
   return (
     <div className={`game ${isDark(view) ? 'is-night' : ''}`}>
       <header className="bar">
@@ -218,6 +231,7 @@ export function Game({ snap, view, act, send, error, connection, onLeave }: Prop
         <section className="panel" aria-label="房主設定">
           <h2>房主設定（隨時生效）</h2>
           <BotPaceSetting seconds={snap.botSeconds} send={send} />
+          <BotModeSetting mode={snap.botMode} available={snap.aiAvailable} send={send} />
           <p className="muted small-text">電腦每一步動作之間的等待時間；拉長比較看得清楚，縮短遊戲比較快。</p>
         </section>
       )}
@@ -252,6 +266,7 @@ export function Game({ snap, view, act, send, error, connection, onLeave }: Prop
               onFront={(c) => onFront(id, c)}
               offline={offline.has(id)}
               bot={bots.has(id)}
+              auto={snap.autoPlayers.includes(id)}
               picture={pictures.get(id)}
               isLeft={showLeft && id === left}
               hit={hits.get(id)}
@@ -308,7 +323,7 @@ export function Game({ snap, view, act, send, error, connection, onLeave }: Prop
                 </button>
               )}
               {canTriggerAbility && (
-                <button className="primary" onClick={() => act({ type: 'DRAW' })}>
+                <button className={`primary ${nudgeDraw ? 'nudge' : ''}`} onClick={() => act({ type: 'DRAW' })}>
                   抽兩張牌
                 </button>
               )}
@@ -317,8 +332,18 @@ export function Game({ snap, view, act, send, error, connection, onLeave }: Prop
               )}
               {canTriggerAbility && view.myAbilities.tituba && <button onClick={() => act({ type: 'ARRANGE_START' })}>查看並重排牌堆</button>}
               {myTurn && view.turn.mode === 'playing' && (
-                <button className="primary" onClick={() => act({ type: 'END_TURN' })}>
+                <button className={`primary ${nudgeEnd ? 'nudge' : ''}`} onClick={() => act({ type: 'END_TURN' })}>
                   結束回合
+                </button>
+              )}
+              {alive && (
+                <button
+                  className={`small ${autoOn ? 'primary' : ''}`}
+                  onClick={() => send('autoplay', { on: !autoOn })}
+                  aria-pressed={autoOn}
+                  title="讓 AI 幫你出牌、做決定；隨時可以取消，自己接手"
+                >
+                  {autoOn ? 'AI 代打中（點此取消）' : 'AI 代打'}
                 </button>
               )}
               {ph.kind === 'night' && ph.step === 'confess' && ph.mustAct && (

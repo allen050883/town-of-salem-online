@@ -1639,3 +1639,47 @@ button.small {
     animation: none;
   }
 }
+
+/* ---------- Nudge: the button that is the next thing to do pulses ---------- */
+button.nudge {
+  animation: nudge 1.1s ease-in-out infinite;
+}
+@keyframes nudge {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--wax) 70%, transparent);
+  }
+  50% {
+    transform: scale(1.06);
+    box-shadow: 0 0 0 8px transparent;
+  }
+}
+
+/* ---------- Two-way switch (computer mode) ---------- */
+.mode {
+  flex-wrap: wrap;
+}
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.segmented button {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: 0.3rem 0.8rem;
+}
+.segmented button.on {
+  background: var(--indigo);
+  color: var(--on-color);
+}
+@media (prefers-reduced-motion: reduce) {
+  button.nudge {
+    animation: none;
+    outline: 3px solid var(--wax);
+    outline-offset: 2px;
+  }
+}

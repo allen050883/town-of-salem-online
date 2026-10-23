@@ -322,3 +322,24 @@ export function BotPaceSetting({ seconds, send, disabled }: { seconds: number; s
     </label>
   );
 }
+
+/** How hard the computers think: fast (a few seconds a step) or thinking (the model reasons first; much slower). The host can change it any time */
+export function BotModeSetting({ mode, available, send, disabled }: { mode: 'fast' | 'think'; available: boolean; send: Send; disabled?: boolean }) {
+  // Without a model on the server the computers always use the built-in strategy
+  if (!available) return null;
+  const pick = (m: 'fast' | 'think') => (
+    <button type="button" className={mode === m ? 'on' : ''} aria-pressed={mode === m} disabled={disabled} onClick={() => send('botMode', { mode: m })}>
+      {m === 'fast' ? '快速模式' : '思考模式'}
+    </button>
+  );
+  return (
+    <div className="check mode">
+      <span>電腦思考程度</span>
+      <span className="segmented" role="group" aria-label="電腦思考程度">
+        {pick('fast')}
+        {pick('think')}
+      </span>
+      <span className="muted small-text">{mode === 'fast' ? '每一步約 3 秒' : '電腦會先深思再出手，每一步可能要 30~90 秒，很吃顯卡'}</span>
+    </div>
+  );
+}

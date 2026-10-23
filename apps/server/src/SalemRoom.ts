@@ -25,7 +25,7 @@ import { CLOSE_REPLACED, RECONNECT_SECONDS } from './protocol';
 import type { ClientMessages, ClientSnapshot, JoinOptions, LogEntry, Member, ReplayRecord } from './protocol';
 import { saveReplay } from './replays';
 import { verifyToken, type AuthUser } from './auth';
-import { aiChoose, aiEnabled, type AiAnswer, type Play } from './aiBot';
+import { aiChoose, aiEnabled, type AiAnswer, type AiMode, type Play } from './aiBot';
 
 export type { ClientSnapshot, LogEntry } from './protocol';
 
@@ -73,6 +73,10 @@ export class SalemRoom extends Room {
   private seatCount: number | null = null;
   /** Seconds a computer player takes per move; the host can change it at any time, even mid-game */
   private botSeconds: number = BOT_SECONDS.default;
+  /** How hard the computers think; the host can change it at any time */
+  private botMode: AiMode = 'fast';
+  /** Human players the computer is playing for (they turned "AI plays for me" on) */
+  private auto = new Set<PlayerId>();
   /** sessionId → member id */
   private sessions = new Map<string, PlayerId>();
   private game: GameState | null = null;
@@ -120,6 +124,8 @@ export class SalemRoom extends Room {
     on('options', (client, msg) => this.handleOptions(client, msg));
     on('seatCount', (client, msg) => this.handleSeatCount(client, msg?.count));
     on('botPace', (client, msg) => this.handleBotPace(client, msg?.seconds));
+    on('botMode', (client, msg) => this.handleBotMode(client, msg?.mode));
+    on('autoplay', (client, msg) => this.handleAutoplay(client, !!msg?.on));
     on('seat', (client, msg) => this.handleSeat(client, !!msg?.spectate));
     on('addBots', (client, msg) => this.handleAddBots(client, msg?.count ?? 1));
     on('removeBot', (client, msg) => this.handleRemoveBot(client, String(msg?.id ?? '')));
@@ -319,7 +325,7 @@ export class SalemRoom extends Room {
     const g = this.game;
     if (!g || g.phase.kind === 'game_over') return;
     for (const id of waitingOn(g)) {
-      if (!this.lobby.find((p) => p.id === id)?.bot) continue;
+      if (!this.isAuto(id)) continue;
       // With the model the pause is built into botThink (it overlaps with the model's thinking time)
       const delay = (aiEnabled() ? 300 : this.botPace()) + Math.max(0, this.pauseUntil - Date.now());
       this.botTimers.set(
@@ -352,12 +358,12 @@ export class SalemRoom extends Room {
     let answer: AiAnswer | null = null;
     if (menu.length > 1) {
       const history = this.log.filter((e) => e.kind === 'event' && (!e.to || e.to.includes(id))).map((e) => e.text);
-      answer = await aiChoose(projectFor(this.game!, id), history, this.plays, menu);
+      answer = await aiChoose(projectFor(this.game!, id), history, this.plays, menu, this.botMode);
     }
     const rest = pace - (Date.now() - started);
     if (rest > 0) await new Promise<void>((resolve) => this.clock.setTimeout(resolve, rest));
     // The game moved on while we were thinking (timer, another action, game over), or a newer decision replaced this one
-    if (!this.game || this.version !== version || this.aiTokens.get(id) !== token) return;
+    if (!this.game || this.version !== version || this.aiTokens.get(id) !== token || !this.isAuto(id)) return;
     if (answer && this.dispatch(id, menu[answer.choice]!.action)) return;
     this.ruleAct(id);
   }
@@ -412,6 +418,7 @@ export class SalemRoom extends Room {
     };
     this.lastWords.clear();
     this.plays = [];
+    this.auto.clear();
     this.announce = null;
     this.pauseUntil = 0;
     this.log = [];
@@ -437,6 +444,7 @@ export class SalemRoom extends Room {
     if (!this.game || this.game.phase.kind !== 'game_over') return this.sendError(client, '遊戲尚未結束');
     this.game = null;
     this.record = null;
+    this.auto.clear();
     this.announce = null;
     this.pauseUntil = 0;
     this.clearTimer();
@@ -452,6 +460,30 @@ export class SalemRoom extends Room {
     if (this.game && this.game.phase.kind !== 'game_over') return this.sendError(client, '遊戲進行中不能調整規則');
     if (typeof patch?.roles === 'boolean') this.options.roles = patch.roles;
     if (typeof patch?.extraWitch === 'boolean') this.options.extraWitch = patch.extraWitch;
+    this.broadcastSnapshots();
+  }
+
+  /** A computer player, or a human who turned on "AI plays for me" */
+  private isAuto(id: PlayerId): boolean {
+    return !!this.lobby.find((p) => p.id === id)?.bot || this.auto.has(id);
+  }
+
+  private handleBotMode(client: Client, mode: unknown) {
+    if (this.sessions.get(client.sessionId) !== this.hostId) return this.sendError(client, '只有房主可以調整電腦的思考模式');
+    if (mode !== 'fast' && mode !== 'think') return;
+    this.botMode = mode;
+    this.broadcastSnapshots();
+  }
+
+  private handleAutoplay(client: Client, on: boolean) {
+    const pid = this.sessions.get(client.sessionId);
+    if (!pid || !this.isPlayer(pid)) return;
+    if (!this.game || this.game.phase.kind === 'game_over') return this.sendError(client, '遊戲進行中才能使用 AI 代打');
+    if (on) this.auto.add(pid);
+    else this.auto.delete(pid);
+    this.pushLog({ kind: 'event', channel: 'system', text: `${this.member(pid)?.name ?? ''} ${on ? '請 AI 代打' : '取消 AI 代打，自己來'}` });
+    // Start (or stop) playing for them right away if it is their move
+    this.scheduleBots();
     this.broadcastSnapshots();
   }
 
@@ -607,8 +639,10 @@ export class SalemRoom extends Room {
 
   private restartTimer() {
     this.clearTimer();
-    const secs = this.game ? phaseTimeoutSeconds(this.game) : null;
+    let secs = this.game ? phaseTimeoutSeconds(this.game) : null;
     if (secs == null) return;
+    // In thinking mode a computer can take minutes over a step: don't time it out while only computers are being waited on
+    if (this.botMode === 'think' && aiEnabled() && this.game && waitingOn(this.game).every((id) => this.isAuto(id))) secs = Math.max(secs, 360);
     this.schedule(secs);
     this.hurryIfAbandoned();
   }
@@ -630,7 +664,8 @@ export class SalemRoom extends Room {
     if (!this.game || !this.timer || this.deadline == null) return;
     const waiting = waitingOn(this.game);
     if (waiting.length === 0) return;
-    const allGone = waiting.every((id) => !this.lobby.find((p) => p.id === id)?.connected);
+    // A player the computer is playing for isn't "gone" even when disconnected
+    const allGone = waiting.every((id) => !this.isAuto(id) && !this.lobby.find((p) => p.id === id)?.connected);
     if (!allGone || this.deadline - Date.now() <= DISCONNECTED_SECONDS * 1000) return;
     this.schedule(DISCONNECTED_SECONDS);
     this.hurried = true;
@@ -665,6 +700,9 @@ export class SalemRoom extends Room {
       options: this.options,
       seatCount: this.seatCount,
       botSeconds: this.botSeconds,
+      botMode: this.botMode,
+      aiAvailable: aiEnabled(),
+      autoPlayers: [...this.auto],
       view: this.game ? projectFor(this.game, pid) : null,
       log: this.log.filter((e) => !e.to || e.to.includes(pid)),
       deadline: this.deadline,

@@ -266,7 +266,7 @@ export interface AiAnswer {
   choice: number;
   reason: string;
   ms: number;
-  /** The model's own thinking, when OLLAMA_THINK is on (empty otherwise) */
+  /** The model's own thinking, when thinking mode is on (empty otherwise) */
   thinking: string;
   /** Tokens the model produced (thinking included) */
   tokens: number;
@@ -274,9 +274,28 @@ export interface AiAnswer {
   prompt: string;
 }
 
+/**
+ * How hard the computers think, chosen by the host: fast mode answers in a few seconds; thinking mode lets the model reason
+ * first (a sharper pick, but each step can take a minute and keeps the GPU busy).
+ */
+export type AiMode = 'fast' | 'think';
+const THINK_TIMEOUT_MS = 300_000;
+const MODE_SETTINGS: Record<AiMode, { think: string | false; timeoutMs: number; numPredict: number }> = {
+  fast: { think: false, timeoutMs: THINK ? 15_000 : TIMEOUT_MS, numPredict: THINK ? 320 : MAX_ANSWER_TOKENS },
+  think: { think: THINK || 'low', timeoutMs: THINK ? TIMEOUT_MS : THINK_TIMEOUT_MS, numPredict: Number(process.env.OLLAMA_NUM_PREDICT) || 8000 },
+};
+/** Scripts that set OLLAMA_THINK keep thinking on by default; the live game starts in fast mode */
+export const DEFAULT_MODE: AiMode = THINK ? 'think' : 'fast';
+
 /** Send a prompt to the model; returns its pick (an index into a menu of `menuLength`), or null when there is no usable answer */
-export async function askModel(messages: { role: string; content: string }[], menuLength: number, who: string): Promise<Omit<AiAnswer, 'prompt'> | null> {
+export async function askModel(
+  messages: { role: string; content: string }[],
+  menuLength: number,
+  who: string,
+  mode: AiMode = DEFAULT_MODE,
+): Promise<Omit<AiAnswer, 'prompt'> | null> {
   if (!aiEnabled() || Date.now() < downUntil) return null;
+  const settings = MODE_SETTINGS[mode];
   const started = Date.now();
   try {
     const res = await fetch(`${OLLAMA_URL}/api/chat`, {
@@ -286,11 +305,11 @@ export async function askModel(messages: { role: string; content: string }[], me
         model: OLLAMA_MODEL,
         messages,
         stream: false,
-        think: THINK,
+        think: settings.think,
         format: FORMAT,
-        options: { temperature: 0.4, num_predict: MAX_ANSWER_TOKENS },
+        options: { temperature: 0.4, num_predict: settings.numPredict },
       }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(settings.timeoutMs),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const body = (await res.json()) as { message?: { content?: string; thinking?: string }; eval_count?: number };
@@ -312,7 +331,7 @@ export async function askModel(messages: { role: string; content: string }[], me
   } catch (e) {
     // Too slow this once: play this move with the built-in bot but keep asking the model
     if (e instanceof Error && e.name === 'TimeoutError') {
-      console.warn(`[ai] ${who}: no answer within ${TIMEOUT_MS / 1000}s`);
+      console.warn(`[ai] ${who}: no answer within ${settings.timeoutMs / 1000}s`);
       return null;
     }
     downUntil = Date.now() + COOLDOWN_MS;
@@ -321,19 +340,94 @@ export async function askModel(messages: { role: string; content: string }[], me
   }
 }
 
-/** Ask the model; returns its pick from `menu`, or null to fall back to the rule bot */
-export async function aiChoose(v: PlayerView, history: string[], plays: Play[], menu: Candidate[]): Promise<AiAnswer | null> {
+/** Stage one of a turn: only "draw, act, or end the turn" is decided here, from a short view; the details of an action come in stage two */
+const STAGE1_SYSTEM = `你是桌遊《獵巫鎮 1692》（Salem 1692）的玩家。這一步只要決定「這回合要做什麼」：抽牌、出牌（含使用角色能力）、還是結束回合。要出什麼牌、打誰，下一步才會給你完整局面再選。
+
+怎麼選：
+- 抽兩張牌：手上沒有值得出的牌、沒有明確目標，或手牌太少時。抽牌後這回合就結束，不能再出牌。
+- 出牌：手上有能推進你陣營目標的牌（證據、目擊、縱火、搶劫、拘留…）、有人快被審判需要救（辯護），或要使用角色能力。
+- 結束回合：已經出過牌，沒有更值得出的牌時。
+- 鎮民偏向自保，但不能一直不動（鎮民要靠審判才會贏）；沒有線索時照「打未翻開牌最多的人」的平均分散做法。女巫要積極，每回合都要推進一件事。
+
+回覆格式：只回 JSON，例如 {"reason":"手上有證據，Bob 未翻開牌最多","choice":2}。reason 用 20 字以內的中文。`;
+
+function briefView(v: PlayerView, plays: Play[], notes: string[], options: string[]): string {
+  const me = v.players[v.me]!;
+  const lines = [`你是 ${me.name}，${identity(v)}。`, factsLine(v.seats.length, v.options.extraWitch)];
+  if (me.role) lines.push(`你的角色：${ROLES[me.role].title}。${ROLE_TIPS[me.effectiveRole ?? me.role]}`);
+  lines.push(`你的審判牌：${me.tryals.map((t) => `${t.kind ? TRYAL[t.kind] : '?'}${t.revealed ? '（已翻開）' : ''}`).join('、')}`);
+  lines.push(`你的手牌：${v.myHand.map((c) => CARD_NAME[c.type]).join('、') || '（沒有）'}`);
+  if (v.amWitch) {
+    const allies = v.seats.filter((id) => id !== v.me && v.players[id]!.isWitch && v.players[id]!.alive).map((id) => v.players[id]!.name);
+    lines.push(`女巫同伴：${allies.join('、') || '（沒有存活的同伴）'}`);
+  }
+  lines.push('', '所有玩家：');
+  const chances = witchChances(v);
+  for (const id of v.seats) {
+    const p = v.players[id]!;
+    if (!p.alive) continue;
+    const front = p.front.filter((c) => !ACCUSATION_VALUE[c.type]).map((c) => CARD_NAME[c.type]);
+    const chance = chances.get(id);
+    lines.push(
+      `- ${p.id === v.me ? `${p.name}（你）` : p.name}｜指控 ${p.accusations}/${p.threshold}｜手牌 ${p.handCount}｜未翻開 ${p.tryals.filter((t) => !t.revealed).length} 張${front.length ? `｜面前：${front.join('、')}` : ''}${chance !== undefined ? `｜女巫機率約 ${Math.round(chance * 100)}%` : ''}`,
+    );
+  }
+  const clues = describeClues(v, plays);
+  if (clues) lines.push('', clues);
+  if (notes.length) lines.push('', '你這回合已經做過的事：', ...notes.map((n) => `- ${n}`));
+  lines.push('', '現在先決定這回合要做什麼：', ...options.map((o, i) => `${i + 1}. ${o}`));
+  return lines.join('\n');
+}
+
+/**
+ * Ask the model; returns its pick from `menu`, or null to fall back to the rule bot.
+ * A turn is decided in two stages: first draw / act / end the turn (a short prompt, always fast), and only when it chooses to act
+ * does it get the full picture and the list of actions, answered in the host's mode.
+ */
+export async function aiChoose(v: PlayerView, history: string[], plays: Play[], menu: Candidate[], mode: AiMode = DEFAULT_MODE): Promise<AiAnswer | null> {
   if (!aiEnabled() || Date.now() < downUntil) return null;
   const who = v.players[v.me]?.name ?? v.me;
   // A new turn starts with nothing done yet
   const mine = v.phase.kind === 'turn' && v.turn.player === v.me;
   if (mine && v.turn.mode === 'idle') turnNotes.set(v.me, []);
   const notes = mine ? (turnNotes.get(v.me) ?? []) : [];
-  const messages = buildMessages(v, history, plays, menu, notes);
-  const answer = await askModel(messages, menu.length, who);
+
+  let pool = menu.map((_, i) => i);
+  let first: { reason: string; ms: number; tokens: number; prompt: string } | null = null;
+  if (mine) {
+    const draw = menu.findIndex((c) => c.action.type === 'DRAW');
+    const end = menu.findIndex((c) => c.action.type === 'END_TURN');
+    const act = menu.map((_, i) => i).filter((i) => i !== draw && i !== end);
+    const options: { kind: 'draw' | 'act' | 'end'; label: string }[] = [];
+    if (draw >= 0) options.push({ kind: 'draw', label: '抽兩張牌（之後這回合就不能再出牌）' });
+    if (act.length > 0) options.push({ kind: 'act', label: `出牌或使用角色能力（有 ${act.length} 種做法，下一步再選）` });
+    if (end >= 0) options.push({ kind: 'end', label: '結束回合' });
+
+    let chosen = options[0]!;
+    first = { reason: '', ms: 0, tokens: 0, prompt: '' };
+    if (options.length > 1) {
+      const prompt = briefView(v, plays, notes, options.map((o) => o.label));
+      const a = await askModel([{ role: 'system', content: STAGE1_SYSTEM }, { role: 'user', content: prompt }], options.length, `${who}（先決定做什麼）`, 'fast');
+      if (!a) return null;
+      chosen = options[a.choice]!;
+      first = { reason: a.reason, ms: a.ms, tokens: a.tokens, prompt };
+      console.log(`[ai] ${who}: 先決定「${chosen.label}」 — ${a.reason} (${a.ms}ms)`);
+    }
+    if (chosen.kind !== 'act') {
+      const choice = chosen.kind === 'draw' ? draw : end;
+      return { choice, reason: first.reason, ms: first.ms, thinking: '', tokens: first.tokens, prompt: first.prompt };
+    }
+    pool = act;
+  }
+
+  // Stage two (and every other kind of decision): the full picture and the list of actions
+  const options = pool.map((i) => menu[i]!);
+  const messages = buildMessages(v, history, plays, options, notes);
+  const answer = await askModel(messages, options.length, who, mode);
   if (!answer) return null;
+  const choice = pool[answer.choice]!;
   // The reason may mention secrets (a Witch's plan), so it only goes to the server log
-  console.log(`[ai] ${who}: ${answer.choice + 1}/${menu.length} ${menu[answer.choice]!.label} — ${answer.reason} (${answer.ms}ms)`);
-  if (mine) turnNotes.set(v.me, [...notes, `${menu[answer.choice]!.label}（理由：${answer.reason}）`]);
-  return { ...answer, prompt: messages[1]!.content };
+  console.log(`[ai] ${who}: ${answer.choice + 1}/${options.length} ${menu[choice]!.label} — ${answer.reason} (${answer.ms}ms)`);
+  if (mine) turnNotes.set(v.me, [...notes, `${menu[choice]!.label}（理由：${answer.reason}）`]);
+  return { ...answer, choice, ms: answer.ms + (first?.ms ?? 0), tokens: answer.tokens + (first?.tokens ?? 0), prompt: messages[1]!.content };
 }

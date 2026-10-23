@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Rng } from '../src/rng';
 import { MAX_CANDIDATES, botAction, candidateActions, createGame, projectFor, reduce, waitingOn } from '../src';
 import type { GameState } from '../src';
-import { NAMES } from './helpers';
+import { NAMES, card, scenario } from './helpers';
 
 /** Play bot games and check the AI menu at every decision along the way */
 function survey(n: number, seed: number, roles: boolean) {
@@ -61,6 +61,30 @@ describe('candidateActions', () => {
     // The server filters refused entries with reduce; they should be rare
     expect(refused / offered).toBeLessThan(0.05);
   }, 60_000);
+
+  it('puts the Parris and Tituba abilities on the menu, and only while they are usable', () => {
+    const s = scenario();
+    s.players.A!.role = 'parris';
+    s.discard = [card('alibi'), card('witness'), card('evidence'), card('conspiracy')];
+    const menu = candidateActions(projectFor(s, 'A'));
+    const take = menu.filter((c) => c.action.type === 'DRAW_DISCARD');
+    expect(take.length).toBe(2);
+    // The best cards first (witness, evidence), never the black card
+    expect(take[0]!.label).toContain('目擊');
+    expect(take[0]!.label).not.toContain('傳染');
+    for (const c of take) expect(reduce(s, { actor: 'A', action: c.action }).ok).toBe(true);
+
+    const t = scenario();
+    t.players.A!.role = 'tituba';
+    t.deck = [card('arson'), card('alibi'), card('accusation'), card('evidence'), card('night')];
+    const arrange = candidateActions(projectFor(t, 'A')).find((c) => c.action.type === 'ARRANGE_START');
+    expect(arrange).toBeTruthy();
+    expect(reduce(t, { actor: 'A', action: arrange!.action }).ok).toBe(true);
+    // Once used, no longer offered
+    const used = reduce(t, { actor: 'A', action: { type: 'ARRANGE_START' } });
+    if (!used.ok) throw new Error(used.error);
+    expect(candidateActions(projectFor(used.state, 'A')).some((c) => c.action.type === 'ARRANGE_START')).toBe(false);
+  });
 
   it('is empty when nothing strategic is asked of the player', () => {
     const s = createGame(

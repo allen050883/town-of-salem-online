@@ -72,7 +72,10 @@ async function playGame(g: number) {
       let action: Action | null = null;
       let source = 'rule';
       let reason = '';
+      let thinking = '';
+      let tokens = 0;
       let ms = 0;
+      let prompt = '';
       if (menu.length > 1) {
         const history = events.filter((e) => !e.to || e.to.includes(id)).map((e) => e.text);
         const answer = await aiChoose(view, history, plays, menu);
@@ -80,6 +83,9 @@ async function playGame(g: number) {
           action = menu[answer.choice]!.action;
           source = 'ai';
           reason = answer.reason;
+          thinking = answer.thinking;
+          tokens = answer.tokens;
+          prompt = answer.prompt;
           ms = answer.ms;
           aiCount++;
           msTotal += ms;
@@ -113,7 +119,11 @@ async function playGame(g: number) {
             targetTeam: target ? team(before, target) : null,
             targetAccusations: target ? projectFor(before, id).players[target]!.accusations : null,
             reason,
+            thinking,
+            tokens,
             ms,
+            menuLabels: menu.map((c) => c.label),
+            prompt,
           }) + '\n',
         );
       }

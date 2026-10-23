@@ -1,4 +1,5 @@
 import { ACCUSATION_VALUE, CARD_COLOR, CARD_NAME, isDisabledInEndgame, isRed } from './cards';
+import { CARD_WORTH } from './bot';
 import type { PlayerView } from './projection';
 import type { Action, Card, PlayerId, TryalKind } from './types';
 
@@ -49,11 +50,37 @@ export function candidateActions(v: PlayerView): Candidate[] {
         v.turn.mode === 'idle'
           ? { action: { type: 'DRAW' }, label: '抽兩張牌（這回合就不能再出牌）' }
           : { action: { type: 'END_TURN' }, label: '結束回合' };
-      return [first, ...playChoices(v, others)].slice(0, MAX_CANDIDATES);
+      const abilities = v.turn.mode === 'idle' ? abilityChoices(v, others.length + 1) : [];
+      return [first, ...abilities, ...playChoices(v, others)].slice(0, MAX_CANDIDATES);
     }
     default:
       return [];
   }
+}
+
+/**
+ * The character abilities that replace drawing: Samuel Parris takes cards from the discard pile (twice per game) and Tituba
+ * rearranges the deck before drawing (once). Without these on the menu the model could never use them.
+ */
+function abilityChoices(v: PlayerView, alive: number): Candidate[] {
+  const out: Candidate[] = [];
+  const parris = v.myAbilities.parris ?? 0;
+  if (parris > 0) {
+    const usable = v.discard
+      .filter((c) => CARD_COLOR[c.type] !== 'black' && !(alive === 2 && isDisabledInEndgame(c.type)))
+      .sort((a, b) => (CARD_WORTH[b.type] ?? 0) - (CARD_WORTH[a.type] ?? 0));
+    const names = (cs: typeof usable) => cs.map((c) => `「${CARD_NAME[c.type]}」`).join('');
+    if (usable.length >= 2) {
+      out.push({ action: { type: 'DRAW_DISCARD', cardIds: usable.slice(0, 2).map((c) => c.id) }, label: `從棄牌堆拿 ${names(usable.slice(0, 2))}（取代抽牌，還剩 ${parris} 次）` });
+    }
+    if (usable.length >= 1) {
+      out.push({ action: { type: 'DRAW_DISCARD', cardIds: [usable[0]!.id] }, label: `從棄牌堆拿 ${names(usable.slice(0, 1))}（取代抽牌，還剩 ${parris} 次）` });
+    }
+  }
+  if ((v.myAbilities.tituba ?? 0) > 0 && v.deckCount > 3) {
+    out.push({ action: { type: 'ARRANGE_START' }, label: '查看並重排牌堆（說書人能力，全場一次；排好後接著抽兩張牌）' });
+  }
+  return out;
 }
 
 function confessChoices(v: PlayerView): Candidate[] {

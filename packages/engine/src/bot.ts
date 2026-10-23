@@ -14,7 +14,7 @@ export function botAction(v: PlayerView, rand: () => number = Math.random): Acti
 }
 
 /** Value of each card for Samuel Parris / John Proctor picks (higher is better) */
-const CARD_WORTH: Partial<Record<CardType, number>> = {
+export const CARD_WORTH: Partial<Record<CardType, number>> = {
   witness: 10,
   evidence: 7,
   arson: 6,

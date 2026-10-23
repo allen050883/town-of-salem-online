@@ -86,6 +86,9 @@ npm test             # 53 項：規則、角色、電腦玩家、AI 候選動作
 npm run typecheck
 npm run smoke        # 伺服器以 AUTH_DEV_LOGIN=1 啟動後，用 bot 透過 WebSocket 打一整局，含觀戰、斷線重連與重播驗證
                      # N=人數（預設 5），ROLES=0 關閉角色
+# 電腦玩家（AI）的檢查工具，需要設定 OLLAMA_URL、OLLAMA_MODEL（不要把你的位址寫進 git）
+#   scripts/ai-selfplay.ts：電腦對電腦打整局，記錄每一步的理由、思考和局面（OLLAMA_THINK=low 可看模型的思考）
+#   scripts/ai-probe.ts：把存下來的決定用新舊提示各問幾次，比較選擇有沒有改善
 ```
 
 ## 已知限制與尚待確認

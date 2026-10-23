@@ -7,14 +7,14 @@
  * on the model's own thinking, which on long game prompts usually runs far past the timeout. OLLAMA_TIMEOUT_MS sets how
  * long to wait for an answer (default 15s).
  */
-import { ACCUSATION_VALUE, CARD_NAME, ROLES, tryalCounts, type Candidate, type CardType, type PlayerId, type PlayerView } from '@salem/engine';
+import { ACCUSATION_VALUE, CARD_NAME, ROLES, tryalCounts, type Candidate, type CardType, type PlayerId, type PlayerView, type RoleId } from '@salem/engine';
 
 const OLLAMA_URL = process.env.OLLAMA_URL?.replace(/\/+$/, '');
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL;
 const THINK = process.env.OLLAMA_THINK && process.env.OLLAMA_THINK !== 'false' ? process.env.OLLAMA_THINK : false;
 const TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS) || 15_000;
 /** Cap on the answer length: a short analysis keeps each move to a few seconds (thinking tokens count too) */
-const MAX_ANSWER_TOKENS = THINK ? 2000 : 320;
+const MAX_ANSWER_TOKENS = Number(process.env.OLLAMA_NUM_PREDICT) || (THINK ? 2000 : 320);
 /** After Ollama can't be reached, skip it for this long so a sleeping PC doesn't stall every move */
 const COOLDOWN_MS = 60_000;
 const HISTORY_LIMIT = 30;
@@ -34,11 +34,11 @@ export interface Play {
   asWitness?: boolean;
 }
 
-const SYSTEM = `你是桌遊《獵巫鎮 1692》（Salem 1692）的玩家，要替自己的陣營贏得勝利。
+export const SYSTEM = `你是桌遊《獵巫鎮 1692》（Salem 1692）的玩家，要替自己的陣營贏得勝利。
 
 規則摘要：
 - 陣營：女巫陣營 vs 鎮民陣營（平民、警長）。
-- 審判牌：每人有好幾張面朝下的審判牌（例如 5 人局每人 5 張），自己看得到自己的。所有審判牌是洗混後平分的，所以女巫通常是「1 張女巫牌 + 幾張平民牌」。持有女巫牌的人就是女巫。
+- 審判牌：每人有好幾張面朝下的審判牌，自己看得到自己的。所有審判牌洗混後平分給大家，持有女巫牌的人就是女巫。場上女巫牌「總共幾張」會寫在局面資訊的開頭，一定要以那個數字為準，不要自己猜。
 - 輪到你時，二選一：抽兩張牌（之後不能出牌），或打出任意張手牌，再結束回合。
 - 紅牌是指控：指控 +1、證據 +3、目擊 +7 點。某人累積到門檻（通常 7 點）就翻開他一張審判牌；翻到女巫牌他就死亡，審判牌全部翻開也會死亡。
 - 綠牌立即生效：辯護（移除最多 3 點指控）、縱火（燒掉對方所有手牌）、詛咒（棄掉對方面前一張藍牌）、搶劫（把一人的手牌全交給另一人）、代罪羔羊（把一人面前的牌全轉給另一人）。
@@ -48,15 +48,28 @@ const SYSTEM = `你是桌遊《獵巫鎮 1692》（Salem 1692）的玩家，要�
 - 勝利：所有女巫都死亡 → 鎮民贏；存活者全部是女巫 → 女巫贏。
 
 推理的關鍵（很重要）：
-- 翻出平民牌「不代表清白」，只代表那一張不是女巫牌。女巫牌藏在還沒翻開的牌裡：一個人沒翻開的牌越少，是女巫的機率越低，但只要還有沒翻開的牌，就可能是女巫。不要說「他翻出平民所以可信」。
-- 黑貓是女巫放的，通常放在鎮民面前。持有黑貓不是可疑的理由，反而偏向是鎮民。
-- 真正的線索是行為：誰替誰辯護、誰從不指控某些人、誰的指控總落在後來被證明不是女巫的人身上、誰帶頭推動對某人的審判、誰在夜晚從不被殺（女巫不會殺同伴）。
+- 翻出平民牌「不代表清白」，只代表那一張不是女巫牌。女巫牌藏在還沒翻開的牌裡：一個人沒翻開的牌越少，是女巫的機率越低，但只要還有沒翻開的牌，就可能是女巫。
+- 黑貓是女巫放的，通常放在鎮民面前，所以持有黑貓的人偏向是鎮民。但這只是機率：不代表他的指控可信，也不能拿來證明別人是女巫。
+- 行為線索要小心使用：某人隨手打了別人 1~2 點指控不是證據；「很低調」「沒有指控」也不是女巫的證據。比較強的線索只有：一個人一再替同一個人辯護或給保護牌；一個人的指控總是落在後來被證明不是女巫的人身上。
+- 規則上沒寫的事不要自己編（例如女巫有幾個、某張牌有什麼效果），以本訊息和局面資訊為準。
 
 策略重點：
-- 鎮民：依行為線索判斷誰像女巫，把指控集中在你真的懷疑的人身上。不要因為某人「只差 1 點」就跟著打，女巫會刻意把指控引到鎮民身上，讓鎮民幫他們完成審判；只有在你也懷疑他時才完成審判。辯護、避難、信徒只給你有理由相信的人。
-- 女巫：絕不指控女巫同伴；把指控引到鎮民身上，特別是快到門檻的鎮民；夜晚優先殺掉一直指控你或你同伴的人，其次是看起來最可信、沒有避難的鎮民；必要時替同伴辯護，但別太明顯。
+- 鎮民（自保 + 平均分散）：
+  · 鎮民只能靠審判把女巫牌翻出來才會贏，所以不能一直不出手。沒有明確線索時，預設做「平均分散」：把指控打在「未翻開審判牌最多」的人身上（局面資訊會寫每個人未翻開幾張，同票的都算候選人）。候選人之中，挑目前累積指控最多的那位繼續打，讓審判真的完成；他被翻開一張牌後再換下一個人。全場鎮民都這樣做，就會自然集中在同一個人。這樣不會把鎮民審死，每次審判也在縮小女巫的藏身範圍。
+  · 反過來，不要專打「未翻開牌最少」的人：那是女巫殺鎮民的做法。
+  · 沒有紅牌可出時就抽牌；手上的辯護、避難這類牌先留著，等有人（尤其是你信任的人）被集火時再用。
+  · 自保：有人針對你（一直打你指控、對你出手）時才反擊，用拘留、縱火、詛咒削弱那個人，不要亂打無關的人；夜晚覺得自己會被殺時可以自首保命。
+  · 「明確線索」只有這些（局面資訊裡的「明確線索」區會列出）：某人是女巫的機率 ≥ 60%；某人一再（至少 2 次）替同一個人辯護或給保護牌；某人的指控總是落在後來被證明不是女巫的人身上。出現明確線索時，放棄平均分散，集中火力攻擊那個人；如果打不到（有信徒保護），先用詛咒拆掉保護再動手。
+  · 隨手的指控、持黑貓、「很低調」都不算線索。辯護、避難、信徒只給你有充分理由相信不是女巫的人。
+- 女巫（積極、會誤導）：
+  · 每個回合都要推進一件事，不要只抽牌或結束回合；手上有可用的牌就找機會用。
+  · 目標：用審判殺鎮民（優先沒翻開的牌很少、一次審判就會死的人），夜晚殺最有威脅的人（一直指控你的人優先）。
+  · 偽裝與誤導：黎明時把黑貓放在自己面前（持黑貓的人看起來像鎮民，傳染翻牌時你可以自己選翻平民牌）；偶爾替快被審判的鎮民辯護，或給鎮民保護牌，建立好人形象；跟著群眾去指控「大家已經在打的人」，不要總是第一個出手；用嫁禍、搶劫把指控轉到鎮民身上；對一直盯著你的鎮民，用拘留、縱火削弱他。
+  · 絕不指控女巫同伴；別讓人看出固定模式（例如總是在最後補刀、總是先動手）。
 - 警長：保護最可能被女巫殺的可信鎮民（例如一直在指控可疑者的人）。
+- 角色能力：局面資訊的「你的角色」旁邊寫了用法，要主動用好它（例如牧師從棄牌堆拿好牌、說書人在抽牌前重排牌堆、醫生把辯護當目擊收割、官員自首不翻牌）。候選動作裡有對應的選項。
 - 自首會翻開自己一張審判牌，翻光就會死，而且翻出平民不能證明清白。只有在你今晚很可能被殺、還有多張沒翻開的牌、而且翻開的不是女巫牌時才考慮。
+- 同一回合內的行動要前後一致：「你這回合已經做過的事」會列在下面，不要剛打了某人，又在同一回合替他辯護。
 
 回覆格式：只回 JSON。先在 reason 用 80 字以內的中文分析局勢（你的陣營目標、誰最可疑或威脅最大、這一步要達成什麼），再寫選項編號，例如 {"reason":"我是鎮民。Bob 一直替 Amy 辯護，Amy 又避開 Bob 的指控，兩人像女巫同伴；Bob 只差 1 點就會被審判，先完成審判","choice":3}`;
 
@@ -67,6 +80,15 @@ function identity(v: PlayerView): string {
 }
 
 const TRYAL = { witch: '女巫', constable: '警長', not_a_witch: '平民' } as const;
+
+/** The facts the model must not guess: table size and how many Witch cards exist */
+export function factsLine(players: number, extraWitch: boolean): string {
+  const k = tryalCounts(players, extraWitch).witch;
+  return `本局共 ${players} 人，場上總共只有 ${k} 張女巫牌（全部藏在大家的審判牌裡）。${k === 1 ? '只有 1 個女巫：找到他並讓他死亡，鎮民就贏了。' : `有 ${k} 個女巫。`}`;
+}
+
+/** What a player has already done this turn (and why), so the next decision in the same turn stays consistent */
+const turnNotes = new Map<PlayerId, string[]>();
 
 /**
  * For a town viewer: the chance each living player holds at least one Witch card, judging only by how many of their
@@ -93,13 +115,34 @@ function witchChances(v: PlayerView): Map<PlayerId, number> {
   return out;
 }
 
+/** How to get the most out of each character (shown next to the player's own character) */
+export const ROLE_TIPS: Record<RoleId, string> = {
+  abigail: '別人對你的指控（你面前的紅牌）太多時，主動發起審判，審判後會全部丟掉。',
+  ann: '發起審判時先抽 2 張、當回合就能用：手牌少時可以積極發起審判。',
+  cotton: '別人對你打的證據只算 1 點，不用太怕證據；指控和目擊照算。',
+  giles: '抽牌時若抽到 2 張指控會再抽 1 張：手牌缺指控時多抽牌。',
+  george: '要 8 點才能審判你，你比別人耐打，可以承受更多指控。',
+  proctor: '有玩家死亡時會自動收下他的手牌（最多 3 張），不必操作。',
+  martha: '複製右手邊第一位存活玩家的能力，注意他的角色有什麼用。',
+  mary: '黑貓與情侶對你無效：抽到傳染時你不必翻牌，可以放心持有黑貓。',
+  rebecca: '別人因審判被翻牌時你會自動抽 1 張，不必操作。',
+  parris: '全場 2 次：抽牌時可改從棄牌堆拿最多 2 張非黑牌（候選動作有「從棄牌堆拿」）。棄牌堆有證據、目擊、縱火、搶劫、避難等好牌時就用。',
+  sarah: '搶劫、縱火對你無效：不怕被燒手牌，可以多存牌。',
+  danforth: '你打出的指控累積 6 點就能審判（比別人少 1 點）：想發起審判時挑你打過的人。',
+  tituba: '全場 1 次：抽牌前可查看並重排牌堆（候選動作有「查看並重排牌堆」），手牌少、需要好牌時用，排好後會接著抽兩張。',
+  griggs: '辯護可以當作目擊（+7 點）打出：對手只差幾點就能審判時用來收割。',
+  phips: '全場 1 次：夜晚自首時不必翻開審判牌（候選動作有「自首但不翻牌」）：覺得自己今晚會被殺就用它。',
+};
+
 function describeView(v: PlayerView): string {
   const me = v.players[v.me]!;
   const lines: string[] = [];
   lines.push(`你是 ${me.name}，${identity(v)}。`);
+  lines.push(factsLine(v.seats.length, v.options.extraWitch));
   if (me.role) {
     const r = ROLES[me.effectiveRole ?? me.role];
     lines.push(`你的角色：${ROLES[me.role].title}${me.effectiveRole && me.effectiveRole !== me.role ? `（目前複製${r.title}）` : ''}，能力：${r.desc}`);
+    lines.push(`這個能力的用法：${ROLE_TIPS[me.effectiveRole ?? me.role]}`);
   }
   lines.push(`你的審判牌：${me.tryals.map((t) => `${t.kind ? TRYAL[t.kind] : '?'}${t.revealed ? '（已翻開）' : ''}`).join('、')}`);
   lines.push(`你的手牌：${v.myHand.map((c) => CARD_NAME[c.type]).join('、') || '（沒有）'}`);
@@ -167,16 +210,42 @@ function describeStats(v: PlayerView, plays: Play[]): string {
   return sections.join('\n') || '（還沒有人出牌）';
 }
 
-export function buildMessages(v: PlayerView, history: string[], plays: Play[], menu: Candidate[]) {
+/** The wording of the clue lines, shared with scripts/ai-probe.ts */
+export const chanceClue = (name: string, pct: number) => `- ${name} 是女巫的機率約 ${pct}%（已經超過 60%）`;
+export const helpClue = (a: string, n: number, t: string) => `- ${a} 已經 ${n} 次替 ${t} 辯護或給保護牌（兩人之中可能有女巫）`;
+export function clueBlock(lines: string[]): string {
+  return ['明確線索：', ...(lines.length ? lines : ['（目前沒有。沒有明確線索時，照「平均分散」的預設做法。）'])].join('\n');
+}
+
+/** Clear clues against someone, for a town viewer: the only grounds for a hard attack (see the strategy text) */
+export function describeClues(v: PlayerView, plays: Play[]): string {
+  if (v.amWitch) return '';
+  const name = (id: PlayerId) => v.players[id]?.name ?? '?';
+  const out: string[] = [];
+  for (const [id, c] of witchChances(v)) if (c >= 0.6) out.push(chanceClue(name(id), Math.round(c * 100)));
+  const helped = new Map<string, number>();
+  for (const p of plays) if (HELPS[p.type]) helped.set(`${p.actor}>${p.target}`, (helped.get(`${p.actor}>${p.target}`) ?? 0) + 1);
+  for (const [k, n] of helped) {
+    if (n < 2) continue;
+    const [a, t] = k.split('>') as [PlayerId, PlayerId];
+    out.push(helpClue(name(a), n, name(t)));
+  }
+  return clueBlock(out);
+}
+
+export function buildMessages(v: PlayerView, history: string[], plays: Play[], menu: Candidate[], notes: string[] = []) {
+  const clues = describeClues(v, plays);
   const user = [
     describeView(v),
     '',
     '出牌統計：',
     describeStats(v, plays),
     '',
+    ...(clues ? [clues, ''] : []),
     `最近的事件（舊→新）：`,
     history.slice(-HISTORY_LIMIT).join('\n') || '（沒有）',
     '',
+    ...(notes.length ? ['你這回合已經做過的事（先後順序）：', ...notes.map((n) => `- ${n}`), ''] : []),
     '現在輪到你決定，可以選的動作：',
     ...menu.map((c, i) => `${i + 1}. ${c.label}`),
   ].join('\n');
@@ -197,20 +266,25 @@ export interface AiAnswer {
   choice: number;
   reason: string;
   ms: number;
+  /** The model's own thinking, when OLLAMA_THINK is on (empty otherwise) */
+  thinking: string;
+  /** Tokens the model produced (thinking included) */
+  tokens: number;
+  /** The player-facing part of the prompt that was sent (for review) */
+  prompt: string;
 }
 
-/** Ask the model; returns its pick from `menu`, or null to fall back to the rule bot */
-export async function aiChoose(v: PlayerView, history: string[], plays: Play[], menu: Candidate[]): Promise<AiAnswer | null> {
+/** Send a prompt to the model; returns its pick (an index into a menu of `menuLength`), or null when there is no usable answer */
+export async function askModel(messages: { role: string; content: string }[], menuLength: number, who: string): Promise<Omit<AiAnswer, 'prompt'> | null> {
   if (!aiEnabled() || Date.now() < downUntil) return null;
   const started = Date.now();
-  const who = v.players[v.me]?.name ?? v.me;
   try {
     const res = await fetch(`${OLLAMA_URL}/api/chat`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         model: OLLAMA_MODEL,
-        messages: buildMessages(v, history, plays, menu),
+        messages,
         stream: false,
         think: THINK,
         format: FORMAT,
@@ -219,7 +293,7 @@ export async function aiChoose(v: PlayerView, history: string[], plays: Play[], 
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const body = (await res.json()) as { message?: { content?: string } };
+    const body = (await res.json()) as { message?: { content?: string; thinking?: string }; eval_count?: number };
     const ms = Date.now() - started;
     let answer: { reason?: unknown; choice?: unknown };
     try {
@@ -230,14 +304,11 @@ export async function aiChoose(v: PlayerView, history: string[], plays: Play[], 
       return null;
     }
     const i = Number(answer.choice) - 1;
-    if (!Number.isInteger(i) || i < 0 || i >= menu.length) {
+    if (!Number.isInteger(i) || i < 0 || i >= menuLength) {
       console.warn(`[ai] ${who}: invalid choice ${String(answer.choice)} (${ms}ms)`);
       return null;
     }
-    // The reason may mention secrets (a Witch's plan), so it only goes to the server log
-    const reason = String(answer.reason ?? '');
-    console.log(`[ai] ${who}: ${i + 1}/${menu.length} ${menu[i]!.label} — ${reason} (${ms}ms)`);
-    return { choice: i, reason, ms };
+    return { choice: i, reason: String(answer.reason ?? ''), ms, thinking: body.message?.thinking ?? '', tokens: body.eval_count ?? 0 };
   } catch (e) {
     // Too slow this once: play this move with the built-in bot but keep asking the model
     if (e instanceof Error && e.name === 'TimeoutError') {
@@ -248,4 +319,21 @@ export async function aiChoose(v: PlayerView, history: string[], plays: Play[], 
     console.warn(`[ai] ${who}: Ollama unreachable, using the built-in bot for ${COOLDOWN_MS / 1000}s (${e instanceof Error ? e.message : e})`);
     return null;
   }
+}
+
+/** Ask the model; returns its pick from `menu`, or null to fall back to the rule bot */
+export async function aiChoose(v: PlayerView, history: string[], plays: Play[], menu: Candidate[]): Promise<AiAnswer | null> {
+  if (!aiEnabled() || Date.now() < downUntil) return null;
+  const who = v.players[v.me]?.name ?? v.me;
+  // A new turn starts with nothing done yet
+  const mine = v.phase.kind === 'turn' && v.turn.player === v.me;
+  if (mine && v.turn.mode === 'idle') turnNotes.set(v.me, []);
+  const notes = mine ? (turnNotes.get(v.me) ?? []) : [];
+  const messages = buildMessages(v, history, plays, menu, notes);
+  const answer = await askModel(messages, menu.length, who);
+  if (!answer) return null;
+  // The reason may mention secrets (a Witch's plan), so it only goes to the server log
+  console.log(`[ai] ${who}: ${answer.choice + 1}/${menu.length} ${menu[answer.choice]!.label} — ${answer.reason} (${answer.ms}ms)`);
+  if (mine) turnNotes.set(v.me, [...notes, `${menu[answer.choice]!.label}（理由：${answer.reason}）`]);
+  return { ...answer, prompt: messages[1]!.content };
 }

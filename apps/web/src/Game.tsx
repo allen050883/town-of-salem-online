@@ -161,7 +161,11 @@ export function Game({ snap, view, act, send, error, connection, onLeave }: Prop
     if (!canPickTryal(owner)) return;
     if (ph.kind === 'reveal') return act({ type: 'CHOOSE_REVEAL', tryalId });
     if (ph.kind === 'conspiracy') return act({ type: 'CONSPIRACY_PICK', tryalId });
-    if (window.confirm('確定要自首嗎？這張審判牌會翻開給所有人看，換取今晚免死。')) act({ type: 'CONFESS', tryalId });
+    const guarded = ph.kind === 'night' && ph.gavel === view.me;
+    const ask = guarded
+      ? '警長今晚已經保護了你，不自首也不會被女巫殺死。還是要自首（這張審判牌會翻開給所有人看）嗎？'
+      : '確定要自首嗎？這張審判牌會翻開給所有人看，換取今晚免死。';
+    if (window.confirm(ask)) act({ type: 'CONFESS', tryalId });
   }
 
   function onFront(owner: PlayerId, c: Card) {
@@ -351,7 +355,9 @@ export function Game({ snap, view, act, send, error, connection, onLeave }: Prop
                   {view.myAbilities.phips && (
                     <button
                       onClick={() => {
-                        if (window.confirm(`使用${ROLES.phips.title}的能力：自首但不翻牌（全場一次）？`)) act({ type: 'CONFESS' });
+                        const guarded = ph.gavel === view.me;
+                        const ask = `使用${ROLES.phips.title}的能力：自首但不翻牌（全場一次）？${guarded ? '\n（警長今晚已經保護了你，其實不需要。）' : ''}`;
+                        if (window.confirm(ask)) act({ type: 'CONFESS' });
                       }}
                     >
                       自首（不翻牌）
@@ -422,7 +428,13 @@ function Prompt({ view, sel, myTurn, spectator }: { view: PlayerView; sel: Selec
         if (ph.step === 'witches')
           text = ph.mustAct ? '夜晚。你是女巫：點一位玩家，決定今晚要殺誰。' : phaseText(view);
         else if (ph.step === 'constable') text = ph.mustAct ? '你是警長：點一位玩家保護他，今晚他不會被女巫殺死（不能選自己）。' : '夜晚。警長正在行動…';
-        else text = ph.mustAct ? '天亮前：要自首嗎？點你自己的一張審判牌翻開，換取今晚免死；或按「不自首」。' : '等待其他人決定是否自首…';
+        else {
+          const g = ph.gavel;
+          const guard = g === null ? '今晚沒有人受到警長保護。' : g === view.me ? '警長保護了你：今晚女巫殺不了你。' : `警長保護了 ${name(g)}。`;
+          if (!ph.mustAct) text = `${guard}等待其他人決定是否自首…`;
+          else if (g === view.me) text = `天亮了。${guard}不需要自首，按「不自首」就好。`;
+          else text = `天亮了。${guard}要自首嗎？點你自己的一張審判牌翻開，換取今晚免死；或按「不自首」。`;
+        }
         break;
       case 'conspiracy':
         text = ph.mustPick ? `傳染！點 ${name(ph.leftOf)}（你左手邊）的一張審判牌拿走。` : ph.picked ? '等待其他人拿牌…' : phaseText(view);

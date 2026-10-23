@@ -71,6 +71,8 @@ export function PlayerRow(props: RowProps) {
   const isMe = p.id === view.me;
   // Whoever the game is waiting on right now: the current turn, or the players who must act in other phases
   const acting = p.alive && (isTurn || view.waiting.includes(p.id));
+  // The Constable's protection, known to everyone once it is day
+  const guarded = view.phase.kind === 'night' && view.phase.step === 'confess' && view.phase.gavel === p.id;
   const filled = Math.min(p.accusations, p.threshold) / p.threshold;
 
   return (
@@ -102,6 +104,7 @@ export function PlayerRow(props: RowProps) {
           {props.bot && <span className="tag">電腦</span>}
           {props.auto && <span className="tag">AI 代打</span>}
           {props.isLeft && <span className="tag left">你的左手邊</span>}
+          {guarded && <span className="tag guard">受警長保護</span>}
           {acting && <span className="tag acting">{isMe ? '輪到你' : '行動中'}</span>}
         </span>
         {p.role && <RoleChip role={p.role} copying={p.effectiveRole} mine={isMe} />}
@@ -210,7 +213,7 @@ export function phaseText(view: PlayerView): string {
     case 'night':
       if (ph.step === 'witches') return ph.victim || ph.votes ? `女巫正在投票（目前目標：${ph.victim ? name(ph.victim) : '未定'}）` : '夜晚。所有人閉上眼睛…';
       if (ph.step === 'constable') return ph.gavel !== null ? `警長選擇保護 ${name(ph.gavel)}` : '夜晚。警長正在行動…';
-      return '天亮前：大家正在決定要不要自首…';
+      return ph.gavel !== null ? `天亮前：警長保護了 ${name(ph.gavel)}，大家正在決定要不要自首…` : '天亮前：大家正在決定要不要自首…';
     case 'conspiracy':
       return '傳染：每個人從左手邊玩家拿走一張審判牌…';
     case 'game_over':

@@ -1683,3 +1683,10 @@ button.nudge {
     outline-offset: 2px;
   }
 }
+
+.tag.guard {
+  border-color: var(--indigo);
+  background: var(--indigo);
+  color: var(--on-color);
+  font-weight: 700;
+}

@@ -84,12 +84,15 @@ function abilityChoices(v: PlayerView, alive: number): Candidate[] {
 }
 
 function confessChoices(v: PlayerView): Candidate[] {
-  const out: Candidate[] = [{ action: { type: 'NIGHT_PASS' }, label: '不自首' }];
+  // The Constable's protection is announced at daybreak: a protected player can't be killed tonight, so confessing only costs a card
+  const guarded = v.phase.kind === 'night' && v.phase.gavel === v.me;
+  const note = guarded ? '（警長今晚保護了你，不自首也不會被殺）' : '';
+  const out: Candidate[] = [{ action: { type: 'NIGHT_PASS' }, label: `不自首${note}` }];
   for (const t of v.players[v.me]!.tryals) {
     if (t.revealed || !t.kind) continue;
-    out.push({ action: { type: 'CONFESS', tryalId: t.id }, label: `自首：翻開自己一張「${TRYAL_NAME[t.kind]}」審判牌，換取今晚免死` });
+    out.push({ action: { type: 'CONFESS', tryalId: t.id }, label: `自首：翻開自己一張「${TRYAL_NAME[t.kind]}」審判牌，換取今晚免死${guarded ? '（但你已受警長保護，沒有必要）' : ''}` });
   }
-  if (v.myAbilities.phips) out.push({ action: { type: 'CONFESS' }, label: '自首但不翻牌（官員能力，全場一次）' });
+  if (v.myAbilities.phips) out.push({ action: { type: 'CONFESS' }, label: `自首但不翻牌（官員能力，全場一次）${guarded ? '（但你已受警長保護，沒有必要）' : ''}` });
   return out;
 }
 

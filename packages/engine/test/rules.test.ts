@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TRYAL_TABLE, accusationTotal, projectFor, reduce } from '../src';
+import { TRYAL_TABLE, accusationTotal, botAction, candidateActions, projectFor, reduce } from '../src';
 import { card, fails, give, must, newGame, scenario, setTryals, skipDawn } from './helpers';
 
 describe('setup', () => {
@@ -230,6 +230,33 @@ describe('night announcements', () => {
     expect(r2.state.phase).toMatchObject({ kind: 'game_over', winner: 'witches' });
     expect(announces(r2.events)).toEqual(['death', 'victory']);
     expect(r2.events.find((e) => e.announce?.kind === 'victory')!.announce).toEqual({ kind: 'victory', winner: 'witches', witches: ['A'] });
+  });
+});
+
+describe('constable protection', () => {
+  it('is hidden while the Constable chooses, and visible to everyone from daybreak', () => {
+    let s = toNight();
+    s = must(s, 'A', { type: 'WITCH_VOTE', target: 'C' });
+    const view = (pid: string) => {
+      const ph = projectFor(s, pid).phase;
+      return ph.kind === 'night' ? ph.gavel : 'not night';
+    };
+    expect(view('D')).toBe(null);
+    s = must(s, 'B', { type: 'CONSTABLE_GAVEL', target: 'D' });
+    // Daybreak: the confess step. Everyone, not only the Constable, sees who is protected
+    for (const pid of ['A', 'B', 'C', 'D']) expect(view(pid)).toBe('D');
+  });
+
+  it('a protected computer does not waste a card confessing', () => {
+    let s = toNight();
+    s = must(s, 'A', { type: 'WITCH_VOTE', target: 'C' });
+    s = must(s, 'B', { type: 'CONSTABLE_GAVEL', target: 'D' });
+    const labels = candidateActions(projectFor(s, 'D')).map((c) => c.label);
+    expect(labels.find((l) => l.startsWith('不自首'))).toContain('警長今晚保護了你');
+    for (let i = 0; i < 300; i++) {
+      const a = botAction(projectFor(s, 'D'), () => Math.random());
+      expect(a).toEqual({ type: 'NIGHT_PASS' });
+    }
   });
 });
 

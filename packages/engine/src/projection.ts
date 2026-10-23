@@ -65,7 +65,7 @@ export type PhaseView =
       /** Visible only to Witches */
       votes: Record<PlayerId, PlayerId> | null;
       victim: PlayerId | null;
-      /** Visible only to the Constable */
+      /** Visible to the Constable at night, and to everyone from daybreak (the confess step) */
       gavel: PlayerId | null;
       passed: PlayerId[];
     }
@@ -171,7 +171,7 @@ function projectPhase(s: GameState, me: PlayerId, amWitch: boolean, amConstable:
         mustAct,
         votes: seeWitch ? ph.votes : null,
         victim: seeWitch ? ph.victim : null,
-        gavel: seeConstable ? ph.gavel : null,
+        gavel: seeConstable || ph.step === 'confess' ? ph.gavel : null,
         passed: ph.passed,
       };
     }

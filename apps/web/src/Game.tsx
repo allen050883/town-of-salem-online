@@ -5,6 +5,7 @@ import { LogPanel } from './LogPanel';
 import { CardList, PlayerRow, RoleChip, isDark, phaseText } from './Table';
 import { CARD_W, CardFace } from './CardFace';
 import { CARD_DESC } from './text';
+import { play, setPrefs, stopMusic, useAudioPrefs } from './audio';
 import { Announcer, BotModeSetting, BotPaceSetting, EventTicker, IntroSheet, useHits } from './Feedback';
 
 interface Props {
@@ -108,6 +109,18 @@ export function Game({ snap, view, act, send, error, connection, onLeave }: Prop
   const bots = new Set(snap.lobby.filter((p) => p.bot).map((p) => p.id));
   const pictures = new Map(snap.lobby.map((p) => [p.id, p.picture]));
   const hits = useHits(snap.log);
+  const sound = useAudioPrefs();
+  // A chime when it becomes my turn and a low note when night falls; the full-screen announcements play their own
+  const wasMyTurn = useRef(false);
+  useEffect(() => {
+    if (myTurn && !wasMyTurn.current) play('turn');
+    wasMyTurn.current = myTurn;
+  }, [myTurn]);
+  const nightStep = ph.kind === 'night' ? ph.step : null;
+  useEffect(() => {
+    if (nightStep === 'witches') play('night');
+  }, [nightStep]);
+  useEffect(() => stopMusic, []);
 
   // ----- Which players / cards can be clicked right now -----
   function canTargetPlayer(id: PlayerId): boolean {
@@ -207,6 +220,12 @@ export function Game({ snap, view, act, send, error, connection, onLeave }: Prop
           牌堆 {view.deckCount}・棄牌 {view.discardCount}
         </button>
         <Countdown deadline={snap.deadline} />
+        <button className="ghost small" onClick={() => setPrefs({ sfx: !sound.sfx })} aria-pressed={sound.sfx} aria-label="音效" title={sound.sfx ? '音效：開（點一下關閉）' : '音效：關'}>
+          {sound.sfx ? '🔔' : '🔕'}
+        </button>
+        <button className="ghost small" onClick={() => setPrefs({ music: !sound.music })} aria-pressed={sound.music} aria-label="背景音樂" title={sound.music ? '音樂：開（點一下關閉）' : '音樂：關'}>
+          {sound.music ? '🎵' : '🔇'}
+        </button>
         {snap.hostId === view.me && (
           <button className="ghost small" onClick={() => setPanel(panel === 'settings' ? 'none' : 'settings')} aria-expanded={panel === 'settings'} aria-label="房主設定" title="房主設定">
             ⚙

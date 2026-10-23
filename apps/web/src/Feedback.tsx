@@ -3,6 +3,7 @@ import type { PlayerId, PlayerView } from '@salem/engine';
 import type { AnnounceItem, LogEntry } from '../../server/src/protocol';
 import { Avatar } from './Avatar';
 import type { Send } from './net';
+import { play } from './audio';
 
 /** How long a player row stays lit after something happens to it */
 const HIT_MS = 2500;
@@ -154,6 +155,7 @@ export function Announcer({
       setShown(null);
       return onDone?.();
     }
+    play(item.kind);
     if (item.ms === 0) return;
     const t = setTimeout(() => setShown({ id: shown.id, index: shown.index + 1 }), item.ms);
     return () => clearTimeout(t);

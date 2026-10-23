@@ -1690,3 +1690,9 @@ button.nudge {
   color: var(--on-color);
   font-weight: 700;
 }
+
+.track-pick {
+  font-size: 0.8rem;
+  padding: 0.2rem 0.3rem;
+  max-width: 7rem;
+}

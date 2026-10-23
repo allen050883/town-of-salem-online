@@ -5,7 +5,7 @@ import { LogPanel } from './LogPanel';
 import { CardList, PlayerRow, RoleChip, isDark, phaseText } from './Table';
 import { CARD_W, CardFace } from './CardFace';
 import { CARD_DESC } from './text';
-import { play, setPrefs, stopMusic, useAudioPrefs } from './audio';
+import { TRACKS, play, setPrefs, stopMusic, useAudioPrefs, type Track } from './audio';
 import { Announcer, BotModeSetting, BotPaceSetting, EventTicker, IntroSheet, useHits } from './Feedback';
 
 interface Props {
@@ -226,6 +226,15 @@ export function Game({ snap, view, act, send, error, connection, onLeave }: Prop
         <button className="ghost small" onClick={() => setPrefs({ music: !sound.music })} aria-pressed={sound.music} aria-label="背景音樂" title={sound.music ? '音樂：開（點一下關閉）' : '音樂：關'}>
           {sound.music ? '🎵' : '🔇'}
         </button>
+        {sound.music && (
+          <select className="track-pick" value={sound.track} onChange={(e) => setPrefs({ track: e.target.value as Track })} aria-label="背景音樂曲風">
+            {TRACKS.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        )}
         {snap.hostId === view.me && (
           <button className="ghost small" onClick={() => setPanel(panel === 'settings' ? 'none' : 'settings')} aria-expanded={panel === 'settings'} aria-label="房主設定" title="房主設定">
             ⚙

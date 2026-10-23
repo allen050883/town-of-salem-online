@@ -3,13 +3,22 @@ import { useEffect, useState } from 'react';
 /** Sound effects are synthesised in the browser (no audio files); the background music is a quiet looping pad. Both can be muted and are remembered per device. */
 export type Sfx = 'turn' | 'night' | 'protect' | 'confess' | 'target' | 'survive' | 'peace' | 'death' | 'victory' | 'conspiracy' | 'conspiracyPass';
 
+export type Track = 'eerie' | 'fog' | 'church' | 'calm';
+export const TRACKS: { id: Track; name: string }[] = [
+  { id: 'eerie', name: '陰森低鳴' },
+  { id: 'fog', name: '迷霧' },
+  { id: 'church', name: '荒廢教堂' },
+  { id: 'calm', name: '靜夜' },
+];
+
 interface Prefs {
   sfx: boolean;
   music: boolean;
+  track: Track;
 }
 
 const KEY = 'salem.audio';
-let prefs: Prefs = { sfx: true, music: false };
+let prefs: Prefs = { sfx: true, music: false, track: 'eerie' };
 try {
   const raw = localStorage.getItem(KEY);
   if (raw) prefs = { ...prefs, ...JSON.parse(raw) };
@@ -126,10 +135,50 @@ const CHORDS = [
 ];
 let chordIndex = 0;
 
+const rand = (a: number, b: number) => a + Math.random() * (b - a);
+
+/** One round of the chosen track; each lasts about as long as its interval, and rounds overlap a little */
+const TRACK_PLAY: Record<Track, { every: number; play: (c: AudioContext, out: AudioNode, t: number) => void }> = {
+  // A deep drone with a beating minor second, a tritone underneath, and now and then a thin high bell out of tune
+  eerie: {
+    every: 8000,
+    play: (c, out, t) => {
+      note(c, out, 55, t, 10, 'sine', 0.09);
+      note(c, out, 58.3, t, 10, 'sine', 0.07);
+      note(c, out, 82.4, t + 1, 8, 'triangle', 0.04);
+      note(c, out, 116.5, t + 2, 7, 'sine', 0.035);
+      if (Math.random() < 0.7) note(c, out, rand(1500, 2400), t + rand(1, 6), 3, 'sine', 0.012);
+      if (Math.random() < 0.35) note(c, out, rand(180, 260), t + rand(2, 6), 4, 'sawtooth', 0.012);
+    },
+  },
+  // Slow clusters of neighbouring notes that never settle
+  fog: {
+    every: 7000,
+    play: (c, out, t) => {
+      [N.D3, N.F3, N.G3 * 1.06, N.A3, N.C4 * 1.03].forEach((f, i) => note(c, out, f, t + i * 0.9, 8, 'sine', 0.035));
+      note(c, out, 73.4, t, 9, 'triangle', 0.05);
+    },
+  },
+  // A hollow organ: bare fifths and a slow Phrygian line
+  church: {
+    every: 6000,
+    play: (c, out, t) => {
+      const line = [N.E3, N.F3, N.G3, N.F3, N.E3, N.D3];
+      const f = line[chordIndex++ % line.length]!;
+      note(c, out, f / 2, t, 6.5, 'triangle', 0.07);
+      note(c, out, (f / 2) * 1.5, t, 6.5, 'triangle', 0.04);
+      note(c, out, f * 2, t + 0.6, 5, 'sine', 0.025);
+    },
+  },
+  calm: {
+    every: 6000,
+    play: (c, out, t) => CHORDS[chordIndex++ % CHORDS.length]!.forEach((f, i) => note(c, out, f, t + i * 0.5, 5.5, 'sine', 0.05)),
+  },
+};
+
 function chord(c: AudioContext) {
   if (!musicBus) return;
-  const t = c.currentTime + 0.05;
-  CHORDS[chordIndex++ % CHORDS.length]!.forEach((f, i) => note(c, musicBus!, f, t + i * 0.5, 5.5, 'sine', 0.05));
+  TRACK_PLAY[prefs.track].play(c, musicBus, c.currentTime + 0.05);
 }
 
 export function stopMusic() {
@@ -148,15 +197,17 @@ function syncMusic() {
     musicBus = c.createGain();
     musicBus.connect(c.destination);
     chord(c);
-    musicTimer = setInterval(() => chord(c), 6000);
+    musicTimer = setInterval(() => chord(c), TRACK_PLAY[prefs.track].every);
   } else if (!prefs.music) {
     stopMusic();
   }
 }
 
 export function setPrefs(p: Partial<Prefs>) {
+  const changedTrack = p.track !== undefined && p.track !== prefs.track;
   prefs = { ...prefs, ...p };
   save();
+  if (changedTrack) stopMusic();
   syncMusic();
 }
 
